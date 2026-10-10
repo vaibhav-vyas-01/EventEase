@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Complete Your Profile — FestGate</title>
+  <meta name="description" content="Complete your FestGate profile to access campus events and digital passes.">
+
+  <!-- Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Syne:wght@700;800&display=swap"
+    rel="stylesheet">
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+  <div class="auth-wrapper">
+
+    <!-- LEFT PANEL: FestGate Brand Showcase -->
+    <aside class="showcase-panel">
+      <div class="showcase-inner">
+        <header class="brand-header">
+          <a href="#" class="brand-logo" aria-label="FestGate Home">
+            <span class="logo-text">Fest<span class="logo-accent">Gate</span></span>
+          </a>
+          <p class="brand-tagline">Every campus event, one gate.</p>
+        </header>
+
+        <div class="hero-visual">
+          <div class="trusted-tag">
+            <span class="trusted-text">Step 2: Profile Setup</span>
+          </div>
+
+          <div class="cards-cluster">
+            <div class="deco-shape lime-glow" aria-hidden="true"></div>
+            <div class="deco-shape purple-glow" aria-hidden="true"></div>
+
+            <div class="badge-card card-fest card-floating-1">
+              <div class="fest-icon-box lime-icon">⚡</div>
+              <div class="card-meta">
+                <span class="card-title">One-Time Verification</span>
+                <span class="card-sub">Quick setup for digital passes</span>
+              </div>
+            </div>
+
+            <div class="badge-card card-fest card-floating-2">
+              <div class="fest-icon-box purple-icon">🛡️</div>
+              <div class="card-meta">
+                <span class="card-title">Verified Identity</span>
+                <span class="card-sub">Role: {{ 'Participant' if role == 'participant' else 'Organizer' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="testimonial-card">
+          <div class="testimonial-content">
+            <p class="quote-text">
+              "Complete your verified profile to instantly receive event access, automated gate passes, and notifications."
+            </p>
+            <div class="quote-author">
+              <div class="author-avatar-wrap">
+                <div class="author-avatar-initials">FG</div>
+              </div>
+              <div class="author-meta">
+                <h4 class="author-name">FestGate Security</h4>
+                <p class="author-role">Gate Access Control</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- RIGHT PANEL: Profile Form -->
+    <main class="auth-panel">
+      <nav class="auth-topbar">
+        <div class="mobile-brand">
+          <span class="logo-text">Fest<span class="logo-accent">Gate</span></span>
+        </div>
+        <div class="auth-switch-text">
+          <button type="button" class="link-btn-bold" id="logoutBtnTop">Log out</button>
+        </div>
+      </nav>
+
+      <div class="auth-container">
+        <header class="form-header">
+          <div class="badge-pill" style="display: inline-block; padding: 4px 12px; background: rgba(182, 255, 59, 0.1); border: 1px solid #B6FF3B; border-radius: 999px; color: #B6FF3B; font-size: 12px; font-weight: 700; text-transform: uppercase; margin-bottom: 12px;">
+            {{ 'Participant' if role == 'participant' else 'Organizer' }} Profile
+          </div>
+          <h1 class="form-title">Complete your profile</h1>
+          <p class="form-subtitle">
+            {% if role == 'participant' %}
+            Provide your campus credentials to enable digital event passes.
+            {% else %}
+            Provide your organization and committee details to start managing events.
+            {% endif %}
+          </p>
+        </header>
+
+        <form id="profileForm" novalidate>
+
+          <!-- Pre-filled Name (Read-only) -->
+          <div class="input-group">
+            <label for="fullName" class="input-label">Full Name</label>
+            <input type="text" id="fullName" class="form-input" value="{{ user.get('full_name', '') }}" readonly style="opacity: 0.8; cursor: not-allowed; background-color: #141414;">
+          </div>
+
+          <!-- Pre-filled Email (Read-only) -->
+          <div class="input-group">
+            <label for="email" class="input-label">Email Address</label>
+            <input type="email" id="email" class="form-input" value="{{ user.get('email', '') }}" readonly style="opacity: 0.8; cursor: not-allowed; background-color: #141414;">
+          </div>
+
+          {% if role == 'participant' %}
+          <!-- Participant: College Name -->
+          <div class="input-group">
+            <label for="college" class="input-label">College Name <span style="color: #FF4D4F;">*</span></label>
+            <input type="text" id="college" name="college" class="form-input" placeholder="e.g. Atmiya University" required value="{{ user.get('college', '') }}">
+            <span class="input-error-msg" id="collegeError"></span>
+          </div>
+
+          <!-- Participant: Roll Number -->
+          <div class="input-group">
+            <label for="rollNumber" class="input-label">Roll Number <span style="color: #FF4D4F;">*</span></label>
+            <input type="text" id="rollNumber" name="rollNumber" class="form-input" placeholder="e.g. 21CS045" required value="{{ user.get('roll_number', '') }}" style="text-transform: uppercase;">
+            <span class="input-error-msg" id="rollNumberError"></span>
+          </div>
+          {% else %}
+          <!-- Organizer: College / Organization Name -->
+          <div class="input-group">
+            <label for="organizationName" class="input-label">College / Organization Name <span style="color: #FF4D4F;">*</span></label>
+            <input type="text" id="organizationName" name="organizationName" class="form-input" placeholder="e.g. Atmiya University" required value="{{ user.get('organization_name', '') }}">
+            <span class="input-error-msg" id="orgError"></span>
+          </div>
+
+          <!-- Organizer: Committee / Department Name -->
+          <div class="input-group">
+            <label for="committeeName" class="input-label">Committee / Department Name <span style="color: #FF4D4F;">*</span></label>
+            <input type="text" id="committeeName" name="committeeName" class="form-input" placeholder="e.g. Tech Club / Cultural Council" required value="{{ user.get('committee_name', '') }}">
+            <span class="input-error-msg" id="committeeError"></span>
+          </div>
+
+          <!-- Organizer: Designation -->
+          <div class="input-group">
+            <label for="designation" class="input-label">Designation <span style="color: #737373;">(Optional)</span></label>
+            <input type="text" id="designation" name="designation" class="form-input" placeholder="e.g. Lead Coordinator / President" value="{{ user.get('designation', '') }}">
+            <span class="input-error-msg" id="designationError"></span>
+          </div>
+          {% endif %}
+
+          <!-- Phone Number (10 digits) -->
+          <div class="input-group">
+            <label for="phone" class="input-label">Phone Number (10 digits) <span style="color: #FF4D4F;">*</span></label>
+            <input type="tel" id="phone" name="phone" class="form-input" placeholder="9876543210" maxlength="10" required value="{{ user.get('phone', '') }}">
+            <span class="input-error-msg" id="phoneError"></span>
+          </div>
+
+          <!-- Submit Button -->
+          <button type="submit" class="btn-primary-submit" id="saveProfileBtn">
+            <span class="btn-label">Save &amp; Continue</span>
+            <span class="btn-spinner" id="btnSpinner" aria-hidden="true"></span>
+          </button>
+        </form>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+  <script>
+    function showToast(message, type = 'success') {
+      const container = document.getElementById('toastContainer');
+      if (!container) return;
+      const toast = document.createElement('div');
+      toast.className = `toast toast-${type}`;
+      toast.innerHTML = `<span>${type === 'success' ? '✓' : '⚠️'}</span><span>${message}</span>`;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        toast.style.transition = 'all 0.3s ease';
+        setTimeout(() => toast.remove(), 300);
+      }, 4000);
+    }
+
+    const role = "{{ role }}";
+    const form = document.getElementById('profileForm');
+    const saveBtn = document.getElementById('saveProfileBtn');
+    const phoneInput = document.getElementById('phone');
+    const phoneError = document.getElementById('phoneError');
+
+    // Logout button
+    const logoutBtnTop = document.getElementById('logoutBtnTop');
+    if (logoutBtnTop) {
+      logoutBtnTop.addEventListener('click', async () => {
+        await fetch('/api/logout', { method: 'POST' });
+        window.location.href = '/';
+      });
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      document.querySelectorAll('.input-error-msg').forEach(el => el.textContent = '');
+      document.querySelectorAll('.form-input').forEach(el => el.classList.remove('is-invalid'));
+
+      let isValid = true;
+      const phoneVal = phoneInput.value.trim();
+
+      if (!phoneVal || phoneVal.length !== 10 || !/^\d{10}$/.test(phoneVal)) {
+        phoneError.textContent = 'Please enter a valid 10-digit phone number.';
+        phoneInput.classList.add('is-invalid');
+        isValid = false;
+      }
+
+      const payload = { phone: phoneVal };
+
+      if (role === 'participant') {
+        const collegeInput = document.getElementById('college');
+        const rollInput = document.getElementById('rollNumber');
+        const collegeVal = collegeInput.value.trim();
+        const rollVal = rollInput.value.trim();
+
+        if (!collegeVal) {
+          document.getElementById('collegeError').textContent = 'College name is required.';
+          collegeInput.classList.add('is-invalid');
+          isValid = false;
+        }
+        if (!rollVal) {
+          document.getElementById('rollNumberError').textContent = 'Roll number is required.';
+          rollInput.classList.add('is-invalid');
+          isValid = false;
+        }
+
+        payload.college = collegeVal;
+        payload.roll_number = rollVal;
+      } else {
+        const orgInput = document.getElementById('organizationName');
+        const commInput = document.getElementById('committeeName');
+        const desigInput = document.getElementById('designation');
+        const orgVal = orgInput.value.trim();
+        const commVal = commInput.value.trim();
+        const desigVal = desigInput.value.trim();
+
+        if (!orgVal) {
+          document.getElementById('orgError').textContent = 'Organization name is required.';
+          orgInput.classList.add('is-invalid');
+          isValid = false;
+        }
+        if (!commVal) {
+          document.getElementById('committeeError').textContent = 'Committee name is required.';
+          commInput.classList.add('is-invalid');
+          isValid = false;
+        }
+
+        payload.organization_name = orgVal;
+        payload.committee_name = commVal;
+        payload.designation = desigVal;
+      }
+
+      if (!isValid) return;
+
+      saveBtn.classList.add('is-loading');
+      saveBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/profile/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          if (data.field === 'roll_number' && document.getElementById('rollNumberError')) {
+            document.getElementById('rollNumberError').textContent = data.message;
+            document.getElementById('rollNumber').classList.add('is-invalid');
+          } else if (data.field === 'phone') {
+            phoneError.textContent = data.message;
+            phoneInput.classList.add('is-invalid');
+          } else {
+            showToast(data.message || 'Error saving profile.', 'error');
+          }
+          return;
+        }
+
+        showToast('Profile completed successfully!', 'success');
+        if (data.redirect_url) {
+          setTimeout(() => {
+            window.location.href = data.redirect_url;
+          }, 400);
+        }
+      } catch (err) {
+        console.error(err);
+        showToast('Server connection error.', 'error');
+      } finally {
+        saveBtn.classList.remove('is-loading');
+        saveBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+
+</html>

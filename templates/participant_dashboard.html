@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Participant Dashboard — FestGate</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Syne:wght@700;800&display=swap"
+    rel="stylesheet">
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+
+<body>
+  <div class="dashboard-layout">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div>
+        <!-- FestGate Logo (Matching login page) -->
+        <a href="{{ url_for('student_dashboard') }}" class="brand-logo" aria-label="FestGate Student">
+          <div class="brand-icon-box">⚡</div>
+          <span class="brand-logo-text">Fest<span>Gate</span></span>
+        </a>
+
+        <div class="sidebar-section-title">Student Portal</div>
+        <ul class="nav-list">
+          <li class="nav-item active" data-tab="tab-dashboard">
+            <button type="button">
+              <span>🏠</span>
+              <span>Home</span>
+            </button>
+          </li>
+          <li class="nav-item" data-tab="tab-events">
+            <button type="button">
+              <span>🧭</span>
+              <span>Browse Events</span>
+            </button>
+          </li>
+          <li class="nav-item" data-tab="tab-passes">
+            <button type="button">
+              <span>🎟️</span>
+              <span>My Passes</span>
+            </button>
+          </li>
+          <li class="nav-item" data-tab="tab-profile">
+            <button type="button">
+              <span>👤</span>
+              <span>My Profile</span>
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Footer & User Info -->
+      <div class="sidebar-footer">
+        <div class="user-snippet">
+          <div class="user-avatar-circle" id="sidebarAvatar">ST</div>
+          <div class="user-meta-info">
+            <div class="user-name" id="sidebarName">Student</div>
+            <span class="user-role-badge" id="sidebarRoll">Roll No</span>
+          </div>
+        </div>
+        <button type="button" class="btn-logout" id="logoutBtn">
+          <span>🚪</span>
+          <span>Log Out</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-wrapper">
+
+      <!-- Topbar -->
+      <header class="topbar">
+        <button type="button" class="mobile-toggle-btn" id="mobileMenuBtn">☰</button>
+        <div class="topbar-search">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="Search events by title, venue, or category...">
+        </div>
+        <div class="topbar-actions">
+          <span class="role-pill">Attendee Gate</span>
+        </div>
+      </header>
+
+      <!-- Page Body Container -->
+      <div class="page-container">
+
+        <!-- TAB 1: DASHBOARD -->
+        <div class="tab-pane active" id="pane-tab-dashboard">
+          <!-- Hero Greeting with real name, college and roll number -->
+          <div class="hero-banner">
+            <div class="hero-content">
+              <div class="hero-badge">🎟️ Fast Track Gate Access</div>
+              <h1 class="hero-title">Welcome back, <span id="heroStudentName">Student</span>!</h1>
+              <p class="hero-sub">
+                Enrolled at <strong id="heroCollege" style="color: var(--text-main);">College</strong> &bull; Roll Number: <strong id="heroRollNumber" style="color: var(--accent);">--</strong>
+              </p>
+            </div>
+            <div class="hero-actions">
+              <button type="button" class="btn-secondary" id="browseEventsShortcutBtn">
+                <span>Explore Events</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Real Stat Cards (Events Registered, Passes, Checked In) -->
+          <div class="stat-grid">
+            <div class="stat-card">
+              <div class="stat-icon-wrap">🎫</div>
+              <div class="stat-details">
+                <span class="stat-label">Events Registered</span>
+                <span class="stat-value" id="statEventsRegistered">0</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon-wrap">📲</div>
+              <div class="stat-details">
+                <span class="stat-label">Passes</span>
+                <span class="stat-value" id="statPasses">0</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon-wrap">✅</div>
+              <div class="stat-details">
+                <span class="stat-label">Checked In</span>
+                <span class="stat-value" id="statCheckedIn">0</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section: Featured Campus Events (from events.csv) -->
+          <div class="card-surface">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Campus Events</h2>
+                <p class="section-sub">Browse events happening across campus</p>
+              </div>
+            </div>
+            <div id="eventsGridContainer" class="events-grid">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 2: BROWSE EVENTS -->
+        <div class="tab-pane" id="pane-tab-events" style="display: none;">
+          <div class="card-surface">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">All Campus Events</h2>
+                <p class="section-sub">Available festivals, competitions, and seminars</p>
+              </div>
+            </div>
+            <div id="fullBrowseEventsContainer" class="events-grid"></div>
+          </div>
+        </div>
+
+        <!-- TAB 3: MY PASSES -->
+        <div class="tab-pane" id="pane-tab-passes" style="display: none;">
+          <div class="card-surface">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">My Event Passes</h2>
+                <p class="section-sub">Digital tickets and access codes</p>
+              </div>
+            </div>
+            <div id="passesContainer">
+              <!-- Populated or empty state -->
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 4: MY PROFILE (Read-only) -->
+        <div class="tab-pane" id="pane-tab-profile" style="display: none;">
+          <div class="card-surface profile-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Attendee Profile</h2>
+                <p class="section-sub">Verified credentials from participants.csv</p>
+              </div>
+            </div>
+
+            <div class="profile-field-grid">
+              <div class="field-item">
+                <span class="field-label">Participant ID</span>
+                <div class="field-value" id="profileParticipantId">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Full Name</span>
+                <div class="field-value" id="profileFullName">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Email Address</span>
+                <div class="field-value" id="profileEmail">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">College Name</span>
+                <div class="field-value" id="profileCollege">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Roll Number</span>
+                <div class="field-value" id="profileRoll">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Phone</span>
+                <div class="field-value" id="profilePhone">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Auth Provider</span>
+                <div class="field-value" id="profileProvider" style="text-transform: capitalize;">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Status</span>
+                <div class="field-value" style="color: var(--accent);">Verified Attendee</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+  </div>
+
+  <script>
+    // Tab switching & sidebar handling
+    const sidebar = document.getElementById('sidebar');
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    if (mobileMenuBtn) {
+      mobileMenuBtn.addEventListener('click', () => {
+        sidebar.classList.toggle('open');
+      });
+    }
+
+    const navItems = document.querySelectorAll('.nav-item');
+    navItems.forEach(item => {
+      item.addEventListener('click', () => {
+        navItems.forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+        const tabId = item.getAttribute('data-tab');
+        document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+        const target = document.getElementById('pane-' + tabId);
+        if (target) target.style.display = 'block';
+        if (window.innerWidth <= 992) sidebar.classList.remove('open');
+      });
+    });
+
+    const shortcutBtn = document.getElementById('browseEventsShortcutBtn');
+    if (shortcutBtn) {
+      shortcutBtn.addEventListener('click', () => {
+        const eventsTab = document.querySelector('[data-tab="tab-events"]');
+        if (eventsTab) eventsTab.click();
+      });
+    }
+
+    // Logout
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/';
+    });
+
+    // Load real participant data from API
+    async function loadParticipantData() {
+      try {
+        const res = await fetch('/api/participant/me');
+        if (!res.ok) {
+          window.location.href = '/';
+          return;
+        }
+        const data = await res.json();
+
+        // Greeting
+        const name = data.full_name || 'Participant';
+        const college = data.college || 'Campus';
+        const roll = data.roll_number || 'N/A';
+        document.getElementById('heroStudentName').textContent = name;
+        document.getElementById('sidebarName').textContent = name;
+        document.getElementById('heroCollege').textContent = college;
+        document.getElementById('heroRollNumber').textContent = roll;
+        document.getElementById('sidebarRoll').textContent = roll;
+
+        const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'ST';
+        document.getElementById('sidebarAvatar').textContent = initials;
+
+        // Stat cards
+        document.getElementById('statEventsRegistered').textContent = data.stats.events_registered || '0';
+        document.getElementById('statPasses').textContent = data.stats.passes || '0';
+        document.getElementById('statCheckedIn').textContent = data.stats.checked_in || '0';
+
+        // Profile tab fields
+        document.getElementById('profileParticipantId').textContent = data.participant_id || '--';
+        document.getElementById('profileFullName').textContent = data.full_name || '--';
+        document.getElementById('profileEmail').textContent = data.email || '--';
+        document.getElementById('profileCollege').textContent = data.college || '--';
+        document.getElementById('profileRoll').textContent = data.roll_number || '--';
+        document.getElementById('profilePhone').textContent = data.phone || '--';
+        document.getElementById('profileProvider').textContent = data.auth_provider || 'Password';
+
+        // Render Browse Events from events.csv
+        const eventsGrid = document.getElementById('eventsGridContainer');
+        const fullEventsGrid = document.getElementById('fullBrowseEventsContainer');
+        const events = data.events || [];
+
+        function renderEventCards(container) {
+          container.innerHTML = '';
+          if (events.length === 0) {
+            container.innerHTML = `
+              <div class="empty-state" style="grid-column: 1 / -1;">
+                <div class="empty-icon">🎪</div>
+                <h3 class="empty-title">No events scheduled</h3>
+                <p class="empty-sub">Check back later for newly announced festivals and competitions.</p>
+              </div>
+            `;
+          } else {
+            events.forEach(ev => {
+              const card = document.createElement('div');
+              card.className = 'event-item-card';
+              card.innerHTML = `
+                <div style="height: 120px; background: linear-gradient(135deg, #1C1C1C 0%, #2A2A2A 100%); display: flex; align-items: center; justify-content: center; font-size: 32px;">
+                  ⚡
+                </div>
+                <div class="event-content-body">
+                  <h3 class="event-title">${ev.title || 'Campus Event'}</h3>
+                  <div class="event-meta-row">
+                    <span>📅 ${ev.date || 'TBA'}</span>
+                    <span>📍 ${ev.venue || 'Campus Venue'}</span>
+                  </div>
+                  <p class="event-desc">${ev.description || 'No description provided.'}</p>
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-top: auto;">
+                    <span style="font-size: 12px; color: var(--text-dim);">Capacity: ${ev.capacity || 'Open'}</span>
+                    <span class="role-pill" style="font-size: 11px; padding: 3px 10px;">Upcoming</span>
+                  </div>
+                </div>
+              `;
+              container.appendChild(card);
+            });
+          }
+        }
+
+        renderEventCards(eventsGrid);
+        renderEventCards(fullEventsGrid);
+
+        // Render My Passes (Empty State)
+        const passesContainer = document.getElementById('passesContainer');
+        const passesList = data.passes_list || [];
+        passesContainer.innerHTML = '';
+
+        if (passesList.length === 0) {
+          passesContainer.innerHTML = `
+            <div class="empty-state">
+              <div class="empty-icon">🎟️</div>
+              <h3 class="empty-title">No active passes yet</h3>
+              <p class="empty-sub">You have not registered for any upcoming events yet. Once you claim a pass, your QR pass and entry ticket will appear here.</p>
+            </div>
+          `;
+        } else {
+          const passGrid = document.createElement('div');
+          passGrid.className = 'events-grid';
+          passesList.forEach(p => {
+            const card = document.createElement('div');
+            card.className = 'event-item-card';
+            card.innerHTML = `
+              <div class="event-content-body">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                  <span class="role-pill" style="font-size: 11px;">Pass Code: ${p.ticket_code || '---'}</span>
+                  <span style="font-size: 12px; color: ${p.checked_in === '1' ? 'var(--accent)' : 'var(--text-muted)'};">
+                    ${p.checked_in === '1' ? '✓ Checked In' : 'Pending Entry'}
+                  </span>
+                </div>
+                <h3 class="event-title">Event Registration</h3>
+                <div class="event-meta-row">
+                  <span>Reg ID: ${p.reg_id || '--'}</span>
+                </div>
+              </div>
+            `;
+            passGrid.appendChild(card);
+          });
+          passesContainer.appendChild(passGrid);
+        }
+
+      } catch (err) {
+        console.error('Error fetching participant data:', err);
+      }
+    }
+
+    loadParticipantData();
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Organizer Dashboard — FestGate</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Syne:wght@700;800&display=swap"
+    rel="stylesheet">
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+
+<body>
+  <div class="dashboard-layout">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div>
+        <!-- FestGate Logo (Matching login page) -->
+        <a href="{{ url_for('organizer_dashboard') }}" class="brand-logo" aria-label="FestGate Organizer">
+          <div class="brand-icon-box">⚡</div>
+          <span class="brand-logo-text">Fest<span>Gate</span></span>
+        </a>
+
+        <div class="sidebar-section-title">Organizer Workspace</div>
+        <ul class="nav-list">
+          <li class="nav-item active" data-tab="tab-dashboard">
+            <button type="button">
+              <span>📊</span>
+              <span>Dashboard</span>
+            </button>
+          </li>
+          <li class="nav-item" data-tab="tab-events">
+            <button type="button">
+              <span>🎟️</span>
+              <span>My Events</span>
+            </button>
+          </li>
+          <li class="nav-item" data-tab="tab-profile">
+            <button type="button">
+              <span>🏛️</span>
+              <span>Club Profile</span>
+            </button>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Footer & User Info -->
+      <div class="sidebar-footer">
+        <div class="user-snippet">
+          <div class="user-avatar-circle" id="sidebarAvatar">OR</div>
+          <div class="user-meta-info">
+            <div class="user-name" id="sidebarName">Organizer</div>
+            <span class="user-role-badge" id="sidebarOrg">Organization</span>
+          </div>
+        </div>
+        <button type="button" class="btn-logout" id="logoutBtn">
+          <span>🚪</span>
+          <span>Log Out</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-wrapper">
+
+      <!-- Topbar -->
+      <header class="topbar">
+        <button type="button" class="mobile-toggle-btn" id="mobileMenuBtn">☰</button>
+        <div class="topbar-search">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="Search events, registrations, or dates...">
+        </div>
+        <div class="topbar-actions">
+          <span class="role-pill">Organizer Gate</span>
+        </div>
+      </header>
+
+      <!-- Page Body Container -->
+      <div class="page-container">
+
+        <!-- TAB 1: DASHBOARD -->
+        <div class="tab-pane active" id="pane-tab-dashboard">
+          <!-- Hero Greeting -->
+          <div class="hero-banner">
+            <div class="hero-content">
+              <div class="hero-badge">✨ Event Control Hub</div>
+              <h1 class="hero-title">Hello, <span id="heroOrganizerName">Organizer</span>!</h1>
+              <p class="hero-sub" id="heroOrgSubtitle">
+                Managing events for <strong id="heroOrgName" style="color: var(--text-main);">Campus</strong>. Monitor real-time admissions and verify campus gates.
+              </p>
+            </div>
+            <div class="hero-actions">
+              <!-- Create Event Button: Visible but disabled next step button -->
+              <button type="button" class="btn-accent" disabled title="Event creation engine coming in next release">
+                <span>➕</span>
+                <span>Create Event (Next step)</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Real Stat Cards -->
+          <div class="stat-grid">
+            <div class="stat-card">
+              <div class="stat-icon-wrap">📋</div>
+              <div class="stat-details">
+                <span class="stat-label">Total Registrations</span>
+                <span class="stat-value" id="statTotalRegistrations">0</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon-wrap">✅</div>
+              <div class="stat-details">
+                <span class="stat-label">Checked In</span>
+                <span class="stat-value" id="statCheckedIn">0</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon-wrap">⚡</div>
+              <div class="stat-details">
+                <span class="stat-label">Capacity Used</span>
+                <span class="stat-value" id="statCapacityUsed">0%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section: My Events Preview -->
+          <div class="card-surface">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">My Events</h2>
+                <p class="section-sub">Events coordinated under your organization</p>
+              </div>
+            </div>
+            <div id="eventsListContainer" class="events-grid">
+              <!-- Dynamically populated or empty state -->
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 2: MY EVENTS (Full Tab) -->
+        <div class="tab-pane" id="pane-tab-events" style="display: none;">
+          <div class="card-surface">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Organized Events</h2>
+                <p class="section-sub">All campus events hosted by your committee</p>
+              </div>
+              <button type="button" class="btn-accent" disabled>
+                <span>➕</span>
+                <span>Create Event (Next step)</span>
+              </button>
+            </div>
+            <div id="fullEventsListContainer" class="events-grid"></div>
+          </div>
+        </div>
+
+        <!-- TAB 3: CLUB PROFILE -->
+        <div class="tab-pane" id="pane-tab-profile" style="display: none;">
+          <div class="card-surface profile-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Organization Profile</h2>
+                <p class="section-sub">Verified credentials from organizers.csv</p>
+              </div>
+            </div>
+
+            <div class="profile-field-grid">
+              <div class="field-item">
+                <span class="field-label">Organizer ID</span>
+                <div class="field-value" id="profileOrgId">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Full Name</span>
+                <div class="field-value" id="profileFullName">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Email Address</span>
+                <div class="field-value" id="profileEmail">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Organization / College</span>
+                <div class="field-value" id="profileOrgName">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Committee / Department</span>
+                <div class="field-value" id="profileCommittee">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Designation</span>
+                <div class="field-value" id="profileDesignation">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Phone</span>
+                <div class="field-value" id="profilePhone">--</div>
+              </div>
+              <div class="field-item">
+                <span class="field-label">Auth Provider</span>
+                <div class="field-value" id="profileProvider" style="text-transform: capitalize;">--</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+  </div>
+
+  <script>
+    // Tab switching & sidebar handling
+    const sidebar = document.getElementById('sidebar');
+    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+    if (mobileMenuBtn) {
+      mobileMenuBtn.addEventListener('click', () => {
+        sidebar.classList.toggle('open');
+      });
+    }
+
+    const navItems = document.querySelectorAll('.nav-item');
+    navItems.forEach(item => {
+      item.addEventListener('click', () => {
+        navItems.forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+        const tabId = item.getAttribute('data-tab');
+        document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
+        const target = document.getElementById('pane-' + tabId);
+        if (target) target.style.display = 'block';
+        if (window.innerWidth <= 992) sidebar.classList.remove('open');
+      });
+    });
+
+    // Logout
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/';
+    });
+
+    // Load real organizer data from API
+    async function loadOrganizerData() {
+      try {
+        const res = await fetch('/api/organizer/me');
+        if (!res.ok) {
+          window.location.href = '/';
+          return;
+        }
+        const data = await res.json();
+
+        // Greeting & Header
+        const name = data.full_name || 'Organizer';
+        const orgName = data.organization_name || 'Campus';
+        document.getElementById('heroOrganizerName').textContent = name;
+        document.getElementById('sidebarName').textContent = name;
+        document.getElementById('sidebarOrg').textContent = orgName;
+        document.getElementById('heroOrgName').textContent = orgName;
+
+        const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'OR';
+        document.getElementById('sidebarAvatar').textContent = initials;
+
+        // Stats from CSV
+        document.getElementById('statTotalRegistrations').textContent = data.stats.total_registrations || '0';
+        document.getElementById('statCheckedIn').textContent = data.stats.checked_in || '0';
+        document.getElementById('statCapacityUsed').textContent = data.stats.capacity_used || '0%';
+
+        // Profile tab fields
+        document.getElementById('profileOrgId').textContent = data.organizer_id || '--';
+        document.getElementById('profileFullName').textContent = data.full_name || '--';
+        document.getElementById('profileEmail').textContent = data.email || '--';
+        document.getElementById('profileOrgName').textContent = data.organization_name || '--';
+        document.getElementById('profileCommittee').textContent = data.committee_name || '--';
+        document.getElementById('profileDesignation').textContent = data.designation || 'Not specified';
+        document.getElementById('profilePhone').textContent = data.phone || '--';
+        document.getElementById('profileProvider').textContent = data.auth_provider || 'Password';
+
+        // Render Events or Empty State
+        const eventsContainer = document.getElementById('eventsListContainer');
+        const fullEventsContainer = document.getElementById('fullEventsListContainer');
+        const events = data.events || [];
+
+        function renderEvents(container) {
+          container.innerHTML = '';
+          if (events.length === 0) {
+            container.innerHTML = `
+              <div class="empty-state" style="grid-column: 1 / -1;">
+                <div class="empty-icon">🎪</div>
+                <h3 class="empty-title">No events published yet</h3>
+                <p class="empty-sub">You have not scheduled any events under your committee. Event creation will be activated in the next step.</p>
+              </div>
+            `;
+          } else {
+            events.forEach(ev => {
+              const card = document.createElement('div');
+              card.className = 'event-item-card';
+              card.innerHTML = `
+                <div style="height: 120px; background: linear-gradient(135deg, #1C1C1C 0%, #2A2A2A 100%); display: flex; align-items: center; justify-content: center; font-size: 32px;">
+                  ⚡
+                </div>
+                <div class="event-content-body">
+                  <h3 class="event-title">${ev.title || 'Campus Event'}</h3>
+                  <div class="event-meta-row">
+                    <span>📅 ${ev.date || 'TBA'}</span>
+                    <span>📍 ${ev.venue || 'Campus Venue'}</span>
+                  </div>
+                  <p class="event-desc">${ev.description || 'No description provided.'}</p>
+                  <div style="font-size: 12px; font-weight: 700; color: var(--accent);">Capacity: ${ev.capacity || 'Open'}</div>
+                </div>
+              `;
+              container.appendChild(card);
+            });
+          }
+        }
+
+        renderEvents(eventsContainer);
+        renderEvents(fullEventsContainer);
+
+      } catch (err) {
+        console.error('Error fetching organizer data:', err);
+      }
+    }
+
+    loadOrganizerData();
+  </script>
+</body>
+
+</html>
