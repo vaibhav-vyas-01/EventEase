@@ -1,607 +1,551 @@
-import os
+"""FestGate backend — auth, profiles and dashboards (CSV storage)."""
 import csv
-import json
+import os
+import tempfile
 import threading
 from datetime import datetime, timezone
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session
-from werkzeug.security import generate_password_hash, check_password_hash
-from google.oauth2 import id_token as google_id_token
-from google.auth.transport import requests as google_requests
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
-app.secret_key = os.environ.get('SECRET_KEY', 'festgate_super_secret_jwt_gatekeeper_token_2026')
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
+from werkzeug.security import check_password_hash, generate_password_hash
+
+# ==================== CONFIG ====================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, 'data')
+DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-PARTICIPANTS_CSV = os.path.join(DATA_DIR, 'participants.csv')
-ORGANIZERS_CSV = os.path.join(DATA_DIR, 'organizers.csv')
-EVENTS_CSV = os.path.join(DATA_DIR, 'events.csv')
-REGISTRATIONS_CSV = os.path.join(DATA_DIR, 'registrations.csv')
+# Set SECRET_KEY as an environment variable in production!
+SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me")
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "festgate-a1f30")
 
-csv_lock = threading.Lock()
+MIN_PASSWORD_LENGTH = 8
+PHONE_LENGTH = 10
+
+app = Flask(__name__, template_folder="templates", static_folder="static")
+app.secret_key = SECRET_KEY
+
+# ==================== CSV SCHEMAS ====================
 
 PARTICIPANT_HEADERS = [
-    'participant_id', 'full_name', 'email', 'college', 'roll_number',
-    'phone', 'password_hash', 'auth_provider', 'google_uid',
-    'profile_complete', 'created_at', 'last_login'
+    "participant_id", "full_name", "email", "college", "roll_number",
+    "phone", "password_hash", "auth_provider", "google_uid",
+    "profile_complete", "created_at", "last_login",
 ]
-
 ORGANIZER_HEADERS = [
-    'organizer_id', 'full_name', 'email', 'organization_name', 'committee_name',
-    'designation', 'phone', 'password_hash', 'auth_provider', 'google_uid',
-    'profile_complete', 'created_at', 'last_login'
+    "organizer_id", "full_name", "email", "organization_name", "committee_name",
+    "designation", "phone", "password_hash", "auth_provider", "google_uid",
+    "profile_complete", "created_at", "last_login",
 ]
+EVENT_HEADERS = ["event_id", "organizer_id", "title", "date", "venue", "description", "capacity"]
+REGISTRATION_HEADERS = ["reg_id", "event_id", "name", "email", "ticket_code", "checked_in", "registered_at"]
 
-EVENT_HEADERS = [
-    'event_id', 'organizer_id', 'title', 'date', 'venue', 'description', 'capacity'
-]
+EVENTS_CSV = os.path.join(DATA_DIR, "events.csv")
+REGISTRATIONS_CSV = os.path.join(DATA_DIR, "registrations.csv")
 
-REGISTRATION_HEADERS = [
-    'reg_id', 'event_id', 'name', 'email', 'ticket_code', 'checked_in', 'registered_at'
-]
+# Everything that differs between the two roles lives here, so the
+# rest of the code never needs `if role == 'participant' ... else ...`.
+ROLES = {
+    "participant": {
+        "label": "a Participant",
+        "csv": os.path.join(DATA_DIR, "participants.csv"),
+        "headers": PARTICIPANT_HEADERS,
+        "id_key": "participant_id",
+        "id_prefix": "P",
+        "dashboard_endpoint": "student_dashboard",
+        "profile_fields": ("college", "roll_number", "phone"),
+        "public_fields": (
+            "participant_id", "full_name", "email", "college", "roll_number",
+            "phone", "auth_provider", "profile_complete",
+        ),
+    },
+    "organizer": {
+        "label": "an Organizer",
+        "csv": os.path.join(DATA_DIR, "organizers.csv"),
+        "headers": ORGANIZER_HEADERS,
+        "id_key": "organizer_id",
+        "id_prefix": "O",
+        "dashboard_endpoint": "organizer_dashboard",
+        "profile_fields": ("organization_name", "committee_name", "phone"),
+        "public_fields": (
+            "organizer_id", "full_name", "email", "organization_name", "committee_name",
+            "designation", "phone", "auth_provider", "profile_complete",
+        ),
+    },
+}
+
+CSV_SCHEMAS = {
+    ROLES["participant"]["csv"]: PARTICIPANT_HEADERS,
+    ROLES["organizer"]["csv"]: ORGANIZER_HEADERS,
+    EVENTS_CSV: EVENT_HEADERS,
+    REGISTRATIONS_CSV: REGISTRATION_HEADERS,
+}
+
+# ==================== CSV STORAGE ====================
+
+# RLock so a handler can hold the lock across read -> modify -> write
+# while read_csv / write_csv lock again inside it.
+csv_lock = threading.RLock()
+
+
+def read_csv(path):
+    with csv_lock:
+        if not os.path.exists(path):
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+
+
+def write_csv(path, headers, rows):
+    """Atomic write: a crash mid-write can't corrupt the file."""
+    with csv_lock:
+        fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix=".tmp")
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(tmp_path, path)
+
 
 def init_csv_files():
     with csv_lock:
-        if not os.path.exists(PARTICIPANTS_CSV):
-            with open(PARTICIPANTS_CSV, 'w', newline='', encoding='utf-8') as f:
-                csv.writer(f).writerow(PARTICIPANT_HEADERS)
-        if not os.path.exists(ORGANIZERS_CSV):
-            with open(ORGANIZERS_CSV, 'w', newline='', encoding='utf-8') as f:
-                csv.writer(f).writerow(ORGANIZER_HEADERS)
-        if not os.path.exists(EVENTS_CSV):
-            with open(EVENTS_CSV, 'w', newline='', encoding='utf-8') as f:
-                csv.writer(f).writerow(EVENT_HEADERS)
-        if not os.path.exists(REGISTRATIONS_CSV):
-            with open(REGISTRATIONS_CSV, 'w', newline='', encoding='utf-8') as f:
-                csv.writer(f).writerow(REGISTRATION_HEADERS)
+        for path, headers in CSV_SCHEMAS.items():
+            if not os.path.exists(path):
+                write_csv(path, headers, [])
+
 
 init_csv_files()
 
-def read_csv(file_path):
-    with csv_lock:
-        if not os.path.exists(file_path):
-            return []
-        with open(file_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            return list(reader)
+# ==================== USER HELPERS ====================
 
-def write_csv(file_path, fieldnames, rows):
-    with csv_lock:
-        with open(file_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def clean(data, key):
+    """Get a stripped string from a JSON payload (None-safe)."""
+    return str(data.get(key) or "").strip()
+
+
+def to_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def pick(source, keys):
+    return {key: source.get(key) for key in keys}
+
+
+def read_users(role):
+    return read_csv(ROLES[role]["csv"])
+
+
+def user_id_of(user, role):
+    return user[ROLES[role]["id_key"]]
+
 
 def find_user_by_email(email):
-    clean_email = email.strip().lower()
-    participants = read_csv(PARTICIPANTS_CSV)
-    for p in participants:
-        if p.get('email', '').strip().lower() == clean_email:
-            return p, 'participant'
-    
-    organizers = read_csv(ORGANIZERS_CSV)
-    for o in organizers:
-        if o.get('email', '').strip().lower() == clean_email:
-            return o, 'organizer'
-            
+    """Return (user, role) for the first match across both roles, else (None, None)."""
+    wanted = email.strip().lower()
+    for role in ROLES:
+        for user in read_users(role):
+            if user.get("email", "").strip().lower() == wanted:
+                return user, role
     return None, None
 
-def find_user_by_id(user_id, role):
-    if role == 'participant':
-        for p in read_csv(PARTICIPANTS_CSV):
-            if p.get('participant_id') == user_id:
-                return p
-    elif role == 'organizer':
-        for o in read_csv(ORGANIZERS_CSV):
-            if o.get('organizer_id') == user_id:
-                return o
-    return None
 
-def generate_id(role):
-    if role == 'participant':
-        rows = read_csv(PARTICIPANTS_CSV)
-        max_num = 0
-        for r in rows:
-            pid = r.get('participant_id', '')
-            if pid.startswith('P') and pid[1:].isdigit():
-                max_num = max(max_num, int(pid[1:]))
-        return f"P{max_num + 1:03d}"
-    else:
-        rows = read_csv(ORGANIZERS_CSV)
-        max_num = 0
-        for r in rows:
-            oid = r.get('organizer_id', '')
-            if oid.startswith('O') and oid[1:].isdigit():
-                max_num = max(max_num, int(oid[1:]))
-        return f"O{max_num + 1:03d}"
+def find_user_by_id(user_id, role):
+    if role not in ROLES:
+        return None
+    id_key = ROLES[role]["id_key"]
+    return next((u for u in read_users(role) if u.get(id_key) == user_id), None)
+
+
+def next_user_id(role, rows):
+    """P001, P002, ... / O001, O002, ..."""
+    cfg = ROLES[role]
+    prefix, id_key = cfg["id_prefix"], cfg["id_key"]
+    numbers = [
+        int(row[id_key][len(prefix):])
+        for row in rows
+        if row.get(id_key, "").startswith(prefix) and row[id_key][len(prefix):].isdigit()
+    ]
+    return f"{prefix}{max(numbers, default=0) + 1:03d}"
+
+
+def create_user(role, **fields):
+    """Append a new user row (blank for any field not given) and return it."""
+    cfg = ROLES[role]
+    with csv_lock:
+        rows = read_csv(cfg["csv"])
+        user = dict.fromkeys(cfg["headers"], "")
+        user.update(profile_complete="false", created_at=now_iso(), last_login=now_iso())
+        user.update(fields)
+        user[cfg["id_key"]] = next_user_id(role, rows)
+        rows.append(user)
+        write_csv(cfg["csv"], cfg["headers"], rows)
+    return user
+
+
+def update_user(role, user_id, changes):
+    cfg = ROLES[role]
+    with csv_lock:
+        rows = read_csv(cfg["csv"])
+        for row in rows:
+            if row[cfg["id_key"]] == user_id:
+                row.update(changes)
+                break
+        write_csv(cfg["csv"], cfg["headers"], rows)
+
 
 def is_profile_complete(user, role):
     if not user:
         return False
-    pc = str(user.get('profile_complete', '')).lower()
-    if pc == 'true':
+    if str(user.get("profile_complete", "")).lower() == "true":
         return True
-    if role == 'participant':
-        return bool(user.get('college') and user.get('roll_number') and user.get('phone'))
-    elif role == 'organizer':
-        return bool(user.get('organization_name') and user.get('committee_name') and user.get('phone'))
-    return False
+    return all(user.get(field) for field in ROLES[role]["profile_fields"])
 
-# ================= AUTH DECORATORS & ROUTE GUARDS =================
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        user_id = session.get('user_id')
-        role = session.get('role')
-        if not user_id or not role:
-            return redirect(url_for('index'))
-        return f(*args, **kwargs)
-    return decorated_function
 
-# ================= PAGES =================
-@app.route('/')
+# ==================== RESPONSE / SESSION HELPERS ====================
+
+def api_error(message, status=400, field=None):
+    body = {"success": False, "message": message}
+    if field:
+        body["field"] = field
+    return jsonify(body), status
+
+
+def api_success(message, redirect_url):
+    return jsonify({"success": True, "message": message, "redirect_url": redirect_url})
+
+
+def role_mismatch_error(existing_role):
+    return api_error(
+        f"This email is registered as {ROLES[existing_role]['label']}. Please use the correct tab."
+    )
+
+
+def dashboard_url(role):
+    return url_for(ROLES[role]["dashboard_endpoint"])
+
+
+def landing_url(user, role):
+    """Where a logged-in user should go next."""
+    return dashboard_url(role) if is_profile_complete(user, role) else url_for("complete_profile")
+
+
+def start_session(user, role):
+    session["user_id"] = user_id_of(user, role)
+    session["role"] = role
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_id") or not session.get("role"):
+            return redirect(url_for("index"))
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+# ==================== PAGES ====================
+
+@app.route("/")
 def index():
-    user_id = session.get('user_id')
-    role = session.get('role')
+    user_id, role = session.get("user_id"), session.get("role")
     if user_id and role:
         user = find_user_by_id(user_id, role)
         if user:
-            if not is_profile_complete(user, role):
-                return redirect(url_for('complete_profile'))
-            if role == 'participant':
-                return redirect(url_for('student_dashboard'))
-            elif role == 'organizer':
-                return redirect(url_for('organizer_dashboard'))
-    return render_template('index.html')
+            return redirect(landing_url(user, role))
+    return render_template("index.html")
 
-@app.route('/complete-profile')
+
+@app.route("/complete-profile")
 @login_required
 def complete_profile():
-    user_id = session.get('user_id')
-    role = session.get('role')
-    user = find_user_by_id(user_id, role)
+    role = session["role"]
+    user = find_user_by_id(session["user_id"], role)
     if not user:
         session.clear()
-        return redirect(url_for('index'))
+        return redirect(url_for("index"))
     if is_profile_complete(user, role):
-        return redirect(url_for('student_dashboard') if role == 'participant' else url_for('organizer_dashboard'))
-    return render_template('complete_profile.html', user=user, role=role)
+        return redirect(dashboard_url(role))
+    return render_template("complete_profile.html", user=user, role=role)
 
-@app.route('/student/dashboard')
+
+def render_dashboard(role, template):
+    """Shared logic for both dashboards: right role, profile complete, then render."""
+    current_role = session["role"]
+    if current_role != role:
+        return redirect(dashboard_url(current_role))
+    user = find_user_by_id(session["user_id"], role)
+    if not user or not is_profile_complete(user, role):
+        return redirect(url_for("complete_profile"))
+    return render_template(template, user=user)
+
+
+@app.route("/student/dashboard")
 @login_required
 def student_dashboard():
-    user_id = session.get('user_id')
-    role = session.get('role')
-    if role != 'participant':
-        return redirect(url_for('organizer_dashboard'))
-    user = find_user_by_id(user_id, role)
-    if not user or not is_profile_complete(user, role):
-        return redirect(url_for('complete_profile'))
-    return render_template('participant_dashboard.html', user=user)
+    return render_dashboard("participant", "participant_dashboard.html")
 
-@app.route('/organizer/dashboard')
+
+@app.route("/organizer/dashboard")
 @login_required
 def organizer_dashboard():
-    user_id = session.get('user_id')
-    role = session.get('role')
-    if role != 'organizer':
-        return redirect(url_for('student_dashboard'))
-    user = find_user_by_id(user_id, role)
-    if not user or not is_profile_complete(user, role):
-        return redirect(url_for('complete_profile'))
-    return render_template('organizer_dashboard.html', user=user)
+    return render_dashboard("organizer", "organizer_dashboard.html")
 
-# ================= AUTH APIS =================
-@app.route('/api/auth/signup', methods=['POST'])
+
+# ==================== AUTH APIS ====================
+
+@app.route("/api/auth/signup", methods=["POST"])
 def api_signup():
-    data = request.get_json() or {}
-    role = data.get('role', 'participant').strip().lower()
-    full_name = data.get('full_name', '').strip()
-    email = data.get('email', '').strip().lower()
-    password = data.get('password', '')
-    confirm_password = data.get('confirm_password', '')
+    data = request.get_json(silent=True) or {}
+    role = clean(data, "role").lower() or "participant"
+    full_name = clean(data, "full_name")
+    email = clean(data, "email").lower()
+    password = data.get("password") or ""
+    confirm_password = data.get("confirm_password") or ""
 
-    if role not in ['participant', 'organizer']:
-        return jsonify({'success': False, 'message': 'Invalid role specified.'}), 400
-
+    if role not in ROLES:
+        return api_error("Invalid role specified.")
     if not full_name:
-        return jsonify({'success': False, 'message': 'Please enter your full name.', 'field': 'full_name'}), 400
-
-    if not email or '@' not in email:
-        return jsonify({'success': False, 'message': 'Please enter a valid email address.', 'field': 'email'}), 400
-
-    if not password or len(password) < 8:
-        return jsonify({'success': False, 'message': 'Password must be at least 8 characters long.', 'field': 'password'}), 400
-
+        return api_error("Please enter your full name.", field="full_name")
+    if "@" not in email:
+        return api_error("Please enter a valid email address.", field="email")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return api_error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters long.", field="password")
     if password != confirm_password:
-        return jsonify({'success': False, 'message': 'Passwords do not match.', 'field': 'confirm_password'}), 400
+        return api_error("Passwords do not match.", field="confirm_password")
 
-    existing_user, existing_role = find_user_by_email(email)
-    if existing_user:
-        if existing_role != role:
-            other_title = 'Organizer' if existing_role == 'organizer' else 'Participant'
-            return jsonify({
-                'success': False,
-                'message': f"This email is registered as an {other_title}. Please use the correct tab."
-            }), 400
-        else:
-            return jsonify({'success': False, 'message': 'An account with this email already exists. Please log in.'}), 400
+    with csv_lock:  # check + create together, so two signups can't use the same email
+        existing_user, existing_role = find_user_by_email(email)
+        if existing_user:
+            if existing_role != role:
+                return role_mismatch_error(existing_role)
+            return api_error("An account with this email already exists. Please log in.")
 
-    # Create user
-    now_iso = datetime.now(timezone.utc).isoformat()
-    new_id = generate_id(role)
-    pwd_hash = generate_password_hash(password)
+        user = create_user(
+            role,
+            full_name=full_name,
+            email=email,
+            password_hash=generate_password_hash(password),
+            auth_provider="password",
+        )
 
-    if role == 'participant':
-        rows = read_csv(PARTICIPANTS_CSV)
-        new_row = {
-            'participant_id': new_id,
-            'full_name': full_name,
-            'email': email,
-            'college': '',
-            'roll_number': '',
-            'phone': '',
-            'password_hash': pwd_hash,
-            'auth_provider': 'password',
-            'google_uid': '',
-            'profile_complete': 'false',
-            'created_at': now_iso,
-            'last_login': now_iso
-        }
-        rows.append(new_row)
-        write_csv(PARTICIPANTS_CSV, PARTICIPANT_HEADERS, rows)
-    else:
-        rows = read_csv(ORGANIZERS_CSV)
-        new_row = {
-            'organizer_id': new_id,
-            'full_name': full_name,
-            'email': email,
-            'organization_name': '',
-            'committee_name': '',
-            'designation': '',
-            'phone': '',
-            'password_hash': pwd_hash,
-            'auth_provider': 'password',
-            'google_uid': '',
-            'profile_complete': 'false',
-            'created_at': now_iso,
-            'last_login': now_iso
-        }
-        rows.append(new_row)
-        write_csv(ORGANIZERS_CSV, ORGANIZER_HEADERS, rows)
+    start_session(user, role)
+    return api_success("Account created successfully!", url_for("complete_profile"))
 
-    session['user_id'] = new_id
-    session['role'] = role
 
-    return jsonify({
-        'success': True,
-        'message': 'Account created successfully!',
-        'redirect_url': '/complete-profile'
-    })
-
-@app.route('/api/auth/login', methods=['POST'])
+@app.route("/api/auth/login", methods=["POST"])
 def api_login():
-    data = request.get_json() or {}
-    role = data.get('role', 'participant').strip().lower()
-    email = data.get('email', '').strip().lower()
-    password = data.get('password', '')
+    data = request.get_json(silent=True) or {}
+    role = clean(data, "role").lower() or "participant"
+    email = clean(data, "email").lower()
+    password = data.get("password") or ""
 
     if not email or not password:
-        return jsonify({'success': False, 'message': 'Email and password are required.'}), 400
+        return api_error("Email and password are required.")
 
     user, user_role = find_user_by_email(email)
     if not user:
-        return jsonify({'success': False, 'message': 'No account found with this email address.'}), 404
-
+        return api_error("No account found with this email address.", 404)
     if user_role != role:
-        other_title = 'Organizer' if user_role == 'organizer' else 'Participant'
-        return jsonify({
-            'success': False,
-            'message': f"This email is registered as an {other_title}. Please use the correct tab."
-        }), 400
+        return role_mismatch_error(user_role)
 
-    # Verify password hash
-    stored_hash = user.get('password_hash', '')
+    stored_hash = user.get("password_hash", "")
     if not stored_hash or not check_password_hash(stored_hash, password):
-        return jsonify({'success': False, 'message': 'Invalid password. Please check and try again.', 'field': 'password'}), 401
+        return api_error("Invalid password. Please check and try again.", 401, field="password")
 
-    # Update last_login
-    user_id_key = 'participant_id' if role == 'participant' else 'organizer_id'
-    user_id = user[user_id_key]
-    csv_file = PARTICIPANTS_CSV if role == 'participant' else ORGANIZERS_CSV
-    headers = PARTICIPANT_HEADERS if role == 'participant' else ORGANIZER_HEADERS
-    rows = read_csv(csv_file)
-    for r in rows:
-        if r[user_id_key] == user_id:
-            r['last_login'] = datetime.now(timezone.utc).isoformat()
-            break
-    write_csv(csv_file, headers, rows)
+    update_user(role, user_id_of(user, role), {"last_login": now_iso()})
+    start_session(user, role)
+    return api_success("Logged in successfully!", landing_url(user, role))
 
-    session['user_id'] = user_id
-    session['role'] = role
 
-    if not is_profile_complete(user, role):
-        redirect_url = '/complete-profile'
-    else:
-        redirect_url = '/student/dashboard' if role == 'participant' else '/organizer/dashboard'
-
-    return jsonify({
-        'success': True,
-        'message': 'Logged in successfully!',
-        'redirect_url': redirect_url
-    })
-
-@app.route('/api/auth/google', methods=['POST'])
+@app.route("/api/auth/google", methods=["POST"])
 def api_google_auth():
-    data = request.get_json() or {}
-    id_token_str = data.get('id_token')
-    selected_role = data.get('role', 'participant').strip().lower()
+    data = request.get_json(silent=True) or {}
+    token = data.get("id_token")
+    role = clean(data, "role").lower() or "participant"
 
-    if not id_token_str:
-        return jsonify({'success': False, 'message': 'Missing Firebase ID token.'}), 400
+    if not token:
+        return api_error("Missing Firebase ID token.")
+    if role not in ROLES:
+        return api_error("Invalid role.")
 
-    if selected_role not in ['participant', 'organizer']:
-        return jsonify({'success': False, 'message': 'Invalid role.'}), 400
-
-    # Server-side verification
     try:
-        req = google_requests.Request()
-        decoded_token = google_id_token.verify_firebase_token(
-            id_token_str,
-            req,
-            audience="festgate-a1f30"
+        claims = google_id_token.verify_firebase_token(
+            token, google_requests.Request(), audience=FIREBASE_PROJECT_ID
         )
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Google token verification failed: {str(e)}'}), 401
+    except Exception as exc:
+        app.logger.warning("Google token verification failed: %s", exc)
+        return api_error("Google token verification failed. Please try again.", 401)
 
-    google_email = decoded_token.get('email', '').strip().lower()
-    google_name = decoded_token.get('name', 'Google User')
-    google_uid = decoded_token.get('sub', decoded_token.get('user_id', ''))
+    email = (claims.get("email") or "").strip().lower()
+    name = claims.get("name", "Google User")
+    google_uid = claims.get("sub") or claims.get("user_id", "")
 
-    if not google_email:
-        return jsonify({'success': False, 'message': 'Google account does not contain a verified email.'}), 400
+    if not email:
+        return api_error("Google account does not contain a verified email.")
 
-    existing_user, existing_role = find_user_by_email(google_email)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    with csv_lock:
+        existing_user, existing_role = find_user_by_email(email)
 
-    if existing_user:
-        if existing_role != selected_role:
-            other_title = 'Organizer' if existing_role == 'organizer' else 'Participant'
-            return jsonify({
-                'success': False,
-                'message': f"This email is registered as an {other_title}. Please use the correct tab."
-            }), 400
-
-        user_id_key = 'participant_id' if selected_role == 'participant' else 'organizer_id'
-        user_id = existing_user[user_id_key]
-        csv_file = PARTICIPANTS_CSV if selected_role == 'participant' else ORGANIZERS_CSV
-        headers = PARTICIPANT_HEADERS if selected_role == 'participant' else ORGANIZER_HEADERS
-        rows = read_csv(csv_file)
-        for r in rows:
-            if r[user_id_key] == user_id:
-                r['last_login'] = now_iso
-                if not r.get('google_uid'):
-                    r['google_uid'] = google_uid
-                break
-        write_csv(csv_file, headers, rows)
-        user = existing_user
-    else:
-        # Create new user via Google
-        user_id = generate_id(selected_role)
-        if selected_role == 'participant':
-            rows = read_csv(PARTICIPANTS_CSV)
-            user = {
-                'participant_id': user_id,
-                'full_name': google_name,
-                'email': google_email,
-                'college': '',
-                'roll_number': '',
-                'phone': '',
-                'password_hash': '',
-                'auth_provider': 'google',
-                'google_uid': google_uid,
-                'profile_complete': 'false',
-                'created_at': now_iso,
-                'last_login': now_iso
-            }
-            rows.append(user)
-            write_csv(PARTICIPANTS_CSV, PARTICIPANT_HEADERS, rows)
+        if existing_user:
+            if existing_role != role:
+                return role_mismatch_error(existing_role)
+            changes = {"last_login": now_iso()}
+            if not existing_user.get("google_uid"):
+                changes["google_uid"] = google_uid
+            update_user(role, user_id_of(existing_user, role), changes)
+            user = existing_user
         else:
-            rows = read_csv(ORGANIZERS_CSV)
-            user = {
-                'organizer_id': user_id,
-                'full_name': google_name,
-                'email': google_email,
-                'organization_name': '',
-                'committee_name': '',
-                'designation': '',
-                'phone': '',
-                'password_hash': '',
-                'auth_provider': 'google',
-                'google_uid': google_uid,
-                'profile_complete': 'false',
-                'created_at': now_iso,
-                'last_login': now_iso
-            }
-            rows.append(user)
-            write_csv(ORGANIZERS_CSV, ORGANIZER_HEADERS, rows)
+            user = create_user(
+                role, full_name=name, email=email,
+                auth_provider="google", google_uid=google_uid,
+            )
 
-    session['user_id'] = user_id
-    session['role'] = selected_role
+    start_session(user, role)
+    return api_success(f"Signed in as {email}!", landing_url(user, role))
 
-    if not is_profile_complete(user, selected_role):
-        redirect_url = '/complete-profile'
-    else:
-        redirect_url = '/student/dashboard' if selected_role == 'participant' else '/organizer/dashboard'
 
-    return jsonify({
-        'success': True,
-        'message': f'Signed in as {google_email}!',
-        'redirect_url': redirect_url
-    })
-
-@app.route('/api/profile/complete', methods=['POST'])
-@login_required
-def api_complete_profile():
-    user_id = session.get('user_id')
-    role = session.get('role')
-    data = request.get_json() or {}
-
-    phone = data.get('phone', '').strip()
-    if not (phone.isdigit() and len(phone) == 10):
-        return jsonify({'success': False, 'message': 'Phone number must be exactly 10 digits.', 'field': 'phone'}), 400
-
-    if role == 'participant':
-        college = data.get('college', '').strip()
-        roll_number = data.get('roll_number', '').strip().upper()
-
-        if not college:
-            return jsonify({'success': False, 'message': 'College Name is required.', 'field': 'college'}), 400
-        if not roll_number:
-            return jsonify({'success': False, 'message': 'Roll Number is required.', 'field': 'roll_number'}), 400
-
-        # Unique roll number check
-        participants = read_csv(PARTICIPANTS_CSV)
-        for p in participants:
-            if p.get('participant_id') != user_id and p.get('roll_number', '').strip().upper() == roll_number:
-                return jsonify({'success': False, 'message': 'This Roll Number is already registered by another participant.', 'field': 'roll_number'}), 400
-
-        for p in participants:
-            if p.get('participant_id') == user_id:
-                p['college'] = college
-                p['roll_number'] = roll_number
-                p['phone'] = phone
-                p['profile_complete'] = 'true'
-                break
-        write_csv(PARTICIPANTS_CSV, PARTICIPANT_HEADERS, participants)
-        return jsonify({
-            'success': True,
-            'message': 'Profile completed successfully!',
-            'redirect_url': '/student/dashboard'
-        })
-
-    elif role == 'organizer':
-        organization_name = data.get('organization_name', '').strip()
-        committee_name = data.get('committee_name', '').strip()
-        designation = data.get('designation', '').strip()
-
-        if not organization_name:
-            return jsonify({'success': False, 'message': 'College / Organization Name is required.', 'field': 'organization_name'}), 400
-        if not committee_name:
-            return jsonify({'success': False, 'message': 'Committee or Department Name is required.', 'field': 'committee_name'}), 400
-
-        organizers = read_csv(ORGANIZERS_CSV)
-        for o in organizers:
-            if o.get('organizer_id') == user_id:
-                o['organization_name'] = organization_name
-                o['committee_name'] = committee_name
-                o['designation'] = designation
-                o['phone'] = phone
-                o['profile_complete'] = 'true'
-                break
-        write_csv(ORGANIZERS_CSV, ORGANIZER_HEADERS, organizers)
-        return jsonify({
-            'success': True,
-            'message': 'Profile completed successfully!',
-            'redirect_url': '/organizer/dashboard'
-        })
-
-    return jsonify({'success': False, 'message': 'Invalid role.'}), 400
-
-@app.route('/api/logout', methods=['POST'])
+@app.route("/api/logout", methods=["POST"])
 def api_logout():
     session.clear()
-    return jsonify({'success': True, 'redirect_url': '/'})
+    return jsonify({"success": True, "redirect_url": "/"})
 
-# ================= USER PROFILE & DASHBOARD APIS =================
-@app.route('/api/participant/me', methods=['GET'])
+
+# ==================== PROFILE COMPLETION ====================
+
+def complete_participant_profile(user_id, data, phone):
+    college = clean(data, "college")
+    roll_number = clean(data, "roll_number").upper()
+
+    if not college:
+        return api_error("College Name is required.", field="college")
+    if not roll_number:
+        return api_error("Roll Number is required.", field="roll_number")
+
+    with csv_lock:  # roll-number check + save together
+        roll_taken = any(
+            p.get("participant_id") != user_id and p.get("roll_number", "").strip().upper() == roll_number
+            for p in read_users("participant")
+        )
+        if roll_taken:
+            return api_error(
+                "This Roll Number is already registered by another participant.", field="roll_number"
+            )
+        update_user("participant", user_id, {
+            "college": college, "roll_number": roll_number,
+            "phone": phone, "profile_complete": "true",
+        })
+
+    return api_success("Profile completed successfully!", url_for("student_dashboard"))
+
+
+def complete_organizer_profile(user_id, data, phone):
+    organization_name = clean(data, "organization_name")
+    committee_name = clean(data, "committee_name")
+
+    if not organization_name:
+        return api_error("College / Organization Name is required.", field="organization_name")
+    if not committee_name:
+        return api_error("Committee or Department Name is required.", field="committee_name")
+
+    update_user("organizer", user_id, {
+        "organization_name": organization_name, "committee_name": committee_name,
+        "designation": clean(data, "designation"), "phone": phone, "profile_complete": "true",
+    })
+    return api_success("Profile completed successfully!", url_for("organizer_dashboard"))
+
+
+PROFILE_HANDLERS = {
+    "participant": complete_participant_profile,
+    "organizer": complete_organizer_profile,
+}
+
+
+@app.route("/api/profile/complete", methods=["POST"])
+@login_required
+def api_complete_profile():
+    handler = PROFILE_HANDLERS.get(session["role"])
+    if not handler:
+        return api_error("Invalid role.")
+
+    data = request.get_json(silent=True) or {}
+    phone = clean(data, "phone")
+    if not (phone.isdigit() and len(phone) == PHONE_LENGTH):
+        return api_error(f"Phone number must be exactly {PHONE_LENGTH} digits.", field="phone")
+
+    return handler(session["user_id"], data, phone)
+
+
+# ==================== DASHBOARD APIS ====================
+
+def is_checked_in(registration):
+    return str(registration.get("checked_in", "0")) == "1"
+
+
+@app.route("/api/participant/me")
 @login_required
 def api_participant_me():
-    user_id = session.get('user_id')
-    role = session.get('role')
-    if role != 'participant':
-        return jsonify({'error': 'Unauthorized'}), 403
+    if session["role"] != "participant":
+        return jsonify({"error": "Unauthorized"}), 403
 
-    user = find_user_by_id(user_id, 'participant')
+    user = find_user_by_id(session["user_id"], "participant")
     if not user:
-        return jsonify({'error': 'User not found'}), 404
+        return jsonify({"error": "User not found"}), 404
 
-    # Calculate stats from registrations.csv and events.csv
-    user_email = user.get('email', '').strip().lower()
-    registrations = read_csv(REGISTRATIONS_CSV)
-    user_regs = [r for r in registrations if r.get('email', '').strip().lower() == user_email]
+    email = user.get("email", "").strip().lower()
+    my_regs = [r for r in read_csv(REGISTRATIONS_CSV) if r.get("email", "").strip().lower() == email]
 
-    events = read_csv(EVENTS_CSV)
-    events_registered_count = len(user_regs)
-    checked_in_count = sum(1 for r in user_regs if str(r.get('checked_in', '0')) == '1')
-    passes_count = events_registered_count
-
-    safe_profile = {
-        'participant_id': user.get('participant_id'),
-        'full_name': user.get('full_name'),
-        'email': user.get('email'),
-        'college': user.get('college'),
-        'roll_number': user.get('roll_number'),
-        'phone': user.get('phone'),
-        'auth_provider': user.get('auth_provider'),
-        'profile_complete': user.get('profile_complete'),
-        'stats': {
-            'events_registered': events_registered_count,
-            'passes': passes_count,
-            'checked_in': checked_in_count
+    return jsonify({
+        **pick(user, ROLES["participant"]["public_fields"]),
+        "stats": {
+            "events_registered": len(my_regs),
+            "passes": len(my_regs),
+            "checked_in": sum(is_checked_in(r) for r in my_regs),
         },
-        'events': events,
-        'passes_list': user_regs
-    }
-    return jsonify(safe_profile)
+        "events": read_csv(EVENTS_CSV),
+        "passes_list": my_regs,
+    })
 
-@app.route('/api/organizer/me', methods=['GET'])
+
+@app.route("/api/organizer/me")
 @login_required
 def api_organizer_me():
-    user_id = session.get('user_id')
-    role = session.get('role')
-    if role != 'organizer':
-        return jsonify({'error': 'Unauthorized'}), 403
+    if session["role"] != "organizer":
+        return jsonify({"error": "Unauthorized"}), 403
 
-    user = find_user_by_id(user_id, 'organizer')
+    user_id = session["user_id"]
+    user = find_user_by_id(user_id, "organizer")
     if not user:
-        return jsonify({'error': 'User not found'}), 404
+        return jsonify({"error": "User not found"}), 404
 
-    # Calculate stats from events.csv and registrations.csv for this organizer
-    events = read_csv(EVENTS_CSV)
-    org_events = [e for e in events if e.get('organizer_id') == user_id]
-    org_event_ids = {e.get('event_id') for e in org_events}
+    my_events = [e for e in read_csv(EVENTS_CSV) if e.get("organizer_id") == user_id]
+    my_event_ids = {e.get("event_id") for e in my_events}
+    my_regs = [r for r in read_csv(REGISTRATIONS_CSV) if r.get("event_id") in my_event_ids]
 
-    registrations = read_csv(REGISTRATIONS_CSV)
-    org_regs = [r for r in registrations if r.get('event_id') in org_event_ids]
+    total_capacity = sum(to_int(e.get("capacity")) for e in my_events)
+    capacity_used = f"{len(my_regs) / total_capacity * 100:.1f}%" if total_capacity else "0%"
 
-    total_registrations = len(org_regs)
-    checked_in = sum(1 for r in org_regs if str(r.get('checked_in', '0')) == '1')
-    total_capacity = sum(int(e.get('capacity', 0) or 0) for e in org_events)
-    capacity_used = f"{(total_registrations / total_capacity * 100):.1f}%" if total_capacity > 0 else "0%"
-
-    safe_profile = {
-        'organizer_id': user.get('organizer_id'),
-        'full_name': user.get('full_name'),
-        'email': user.get('email'),
-        'organization_name': user.get('organization_name'),
-        'committee_name': user.get('committee_name'),
-        'designation': user.get('designation'),
-        'phone': user.get('phone'),
-        'auth_provider': user.get('auth_provider'),
-        'profile_complete': user.get('profile_complete'),
-        'stats': {
-            'total_registrations': total_registrations,
-            'checked_in': checked_in,
-            'capacity_used': capacity_used
+    return jsonify({
+        **pick(user, ROLES["organizer"]["public_fields"]),
+        "stats": {
+            "total_registrations": len(my_regs),
+            "checked_in": sum(is_checked_in(r) for r in my_regs),
+            "capacity_used": capacity_used,
         },
-        'events': org_events
-    }
-    return jsonify(safe_profile)
+        "events": my_events,
+    })
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
+    app.run(host="0.0.0.0", port=port, debug=debug)
