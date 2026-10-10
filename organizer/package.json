@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "canvas-confetti": "^1.9.4",
-    "firebase": "^11.4.0",
+    "firebase": "^11.10.0",
     "html5-qrcode": "^2.3.8",
     "lucide-react": "^0.475.0",
     "qrcode": "^1.5.4",
