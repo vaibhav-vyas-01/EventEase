@@ -1,15 +1,16 @@
 // Firebase Client Configuration for FestGate
-// Project: festgate-5a369
+// Project: festgate-a1f30
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 const firebaseConfig = {
-  apiKey: window.FIREBASE_API_KEY || "AIzaSyDummyKeyForDevelopment1234567890",
-  authDomain: "festgate-5a369.firebaseapp.com",
-  projectId: "festgate-5a369",
-  storageBucket: "festgate-5a369.appspot.com",
-  messagingSenderId: "1029384756",
-  appId: "1:1029384756:web:abcdef123456"
+  apiKey: "AIzaSyD2jMuX-HkqmIuqE_ADADvAfEMpOUIcpqw",
+  authDomain: "festgate-a1f30.firebaseapp.com",
+  projectId: "festgate-a1f30",
+  storageBucket: "festgate-a1f30.firebasestorage.app",
+  messagingSenderId: "591752808264",
+  appId: "1:591752808264:web:ef376be74ee2a652d7d57d",
+  measurementId: "G-JVLKYQTH67"
 };
 
 const app = initializeApp(firebaseConfig);
