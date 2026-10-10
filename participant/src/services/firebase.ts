@@ -4,13 +4,13 @@ import { EventItem, Attendee, Coordinator, GateLog, StatSummary, StudentUser, Re
 
 // Optional Firebase configuration from environment
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyD2jMuX-HkqmIuqE_ADADvAfEMpOUIcpqw",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "festgate-a1f30.firebaseapp.com",
-  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || "https://festgate-a1f30-default-rtdb.firebaseio.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "festgate-a1f30",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "festgate-a1f30.firebasestorage.app",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "591752808264",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:591752808264:web:ef376be74ee2a652d7d57d"
+  apiKey: "AIzaSyD2jMuX-HkqmIuqE_ADADvAfEMpOUIcpqw",
+  authDomain: "festgate-a1f30.firebaseapp.com",
+  databaseURL: "https://festgate-a1f30-default-rtdb.firebaseio.com",
+  projectId: "festgate-a1f30",
+  storageBucket: "festgate-a1f30.firebasestorage.app",
+  messagingSenderId: "591752808264",
+  appId: "1:591752808264:web:ef376be74ee2a652d7d57d"
 };
 
 let db: ReturnType<typeof getDatabase> | null = null;
