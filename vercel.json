@@ -1,0 +1,28 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": "web",
+      "framework": "vite"
+    },
+    "organizer": {
+      "root": "organizer",
+      "framework": "vite"
+    },
+    "participant": {
+      "root": "participant",
+      "framework": "vite"
+    },
+    "api": {
+      "root": "api",
+      "runtime": "python",
+      "entrypoint": "app.py"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": { "service": "api" } },
+    { "source": "/organizer/(.*)", "destination": { "service": "organizer" } },
+    { "source": "/student/(.*)", "destination": { "service": "participant" } },
+    { "source": "/(.*)", "destination": { "service": "web" } }
+  ]
+}
