@@ -1,61 +1,53 @@
-"""FestGate backend — auth, profiles and dashboards (CSV storage)."""
-import csv
+"""FestGate backend — auth, profiles and dashboards (Firebase Firestore storage)."""
+import json
 import os
-import tempfile
-import threading
 from datetime import datetime, timezone
 from functools import wraps
 
+import firebase_admin
+from firebase_admin import auth as firebase_auth
+from firebase_admin import credentials, firestore
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token as google_id_token
+from google.cloud.firestore_v1.base_query import FieldFilter
+from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # ==================== CONFIG ====================
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# Set SECRET_KEY as an environment variable in production!
+# Set SECRET_KEY as an environment variable (Vercel -> Settings -> Environment Variables)!
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me")
-FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "festgate-a1f30")
+
+# Either the full service-account JSON text (Vercel) or a path to the .json file (local).
+FIREBASE_CREDENTIALS = os.environ.get("FIREBASE_CREDENTIALS", "")
 
 MIN_PASSWORD_LENGTH = 8
 PHONE_LENGTH = 10
+FIRESTORE_IN_LIMIT = 30  # Firestore allows max 30 values in an "in" query
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = SECRET_KEY
 
-# ==================== CSV SCHEMAS ====================
-
-PARTICIPANT_HEADERS = [
-    "participant_id", "full_name", "email", "college", "roll_number",
-    "phone", "password_hash", "auth_provider", "google_uid",
-    "profile_complete", "created_at", "last_login",
-]
-ORGANIZER_HEADERS = [
-    "organizer_id", "full_name", "email", "organization_name", "committee_name",
-    "designation", "phone", "password_hash", "auth_provider", "google_uid",
-    "profile_complete", "created_at", "last_login",
-]
-EVENT_HEADERS = ["event_id", "organizer_id", "title", "date", "venue", "description", "capacity"]
-REGISTRATION_HEADERS = ["reg_id", "event_id", "name", "email", "ticket_code", "checked_in", "registered_at"]
-
-EVENTS_CSV = os.path.join(DATA_DIR, "events.csv")
-REGISTRATIONS_CSV = os.path.join(DATA_DIR, "registrations.csv")
+# Firestore collection names
+EVENTS = "events"
+REGISTRATIONS = "registrations"
+EMAIL_INDEX = "emails"  # emails/{email} -> {role, user_id}; guarantees unique emails
+COUNTERS = "counters"  # counters/{role} -> {value}; used for P001, P002, ... IDs
 
 # Everything that differs between the two roles lives here, so the
 # rest of the code never needs `if role == 'participant' ... else ...`.
 ROLES = {
     "participant": {
         "label": "a Participant",
-        "csv": os.path.join(DATA_DIR, "participants.csv"),
-        "headers": PARTICIPANT_HEADERS,
+        "collection": "participants",
         "id_key": "participant_id",
         "id_prefix": "P",
         "dashboard_endpoint": "student_dashboard",
         "profile_fields": ("college", "roll_number", "phone"),
+        "fields": (
+            "participant_id", "full_name", "email", "college", "roll_number",
+            "phone", "password_hash", "auth_provider", "google_uid",
+            "profile_complete", "created_at", "last_login",
+        ),
         "public_fields": (
             "participant_id", "full_name", "email", "college", "roll_number",
             "phone", "auth_provider", "profile_complete",
@@ -63,12 +55,16 @@ ROLES = {
     },
     "organizer": {
         "label": "an Organizer",
-        "csv": os.path.join(DATA_DIR, "organizers.csv"),
-        "headers": ORGANIZER_HEADERS,
+        "collection": "organizers",
         "id_key": "organizer_id",
         "id_prefix": "O",
         "dashboard_endpoint": "organizer_dashboard",
         "profile_fields": ("organization_name", "committee_name", "phone"),
+        "fields": (
+            "organizer_id", "full_name", "email", "organization_name", "committee_name",
+            "designation", "phone", "password_hash", "auth_provider", "google_uid",
+            "profile_complete", "created_at", "last_login",
+        ),
         "public_fields": (
             "organizer_id", "full_name", "email", "organization_name", "committee_name",
             "designation", "phone", "auth_provider", "profile_complete",
@@ -76,47 +72,41 @@ ROLES = {
     },
 }
 
-CSV_SCHEMAS = {
-    ROLES["participant"]["csv"]: PARTICIPANT_HEADERS,
-    ROLES["organizer"]["csv"]: ORGANIZER_HEADERS,
-    EVENTS_CSV: EVENT_HEADERS,
-    REGISTRATIONS_CSV: REGISTRATION_HEADERS,
-}
+# ==================== FIRESTORE ====================
 
-# ==================== CSV STORAGE ====================
-
-# RLock so a handler can hold the lock across read -> modify -> write
-# while read_csv / write_csv lock again inside it.
-csv_lock = threading.RLock()
+_db = None
 
 
-def read_csv(path):
-    with csv_lock:
-        if not os.path.exists(path):
-            return []
-        with open(path, "r", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
+def init_firebase():
+    """Initialise the Firebase Admin SDK once (safe to call many times)."""
+    if firebase_admin._apps:
+        return
+    raw = FIREBASE_CREDENTIALS.strip()
+    if raw.startswith("{"):
+        cred = credentials.Certificate(json.loads(raw))
+    elif raw and os.path.exists(raw):
+        cred = credentials.Certificate(raw)
+    else:
+        raise RuntimeError(
+            "FIREBASE_CREDENTIALS is not set. Put the service-account JSON text "
+            "(or a path to the .json file) in this environment variable."
+        )
+    firebase_admin.initialize_app(cred)
 
 
-def write_csv(path, headers, rows):
-    """Atomic write: a crash mid-write can't corrupt the file."""
-    with csv_lock:
-        fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix=".tmp")
-        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
-            writer.writeheader()
-            writer.writerows(rows)
-        os.replace(tmp_path, path)
+def get_db():
+    global _db
+    if _db is None:
+        init_firebase()
+        _db = firestore.client()
+    return _db
 
 
-def init_csv_files():
-    with csv_lock:
-        for path, headers in CSV_SCHEMAS.items():
-            if not os.path.exists(path):
-                write_csv(path, headers, [])
+def query_docs(collection, field, op, value):
+    """Return all documents (as dicts) where `field <op> value`."""
+    query = get_db().collection(collection).where(filter=FieldFilter(field, op, value))
+    return [doc.to_dict() for doc in query.stream()]
 
-
-init_csv_files()
 
 # ==================== USER HELPERS ====================
 
@@ -140,66 +130,63 @@ def pick(source, keys):
     return {key: source.get(key) for key in keys}
 
 
-def read_users(role):
-    return read_csv(ROLES[role]["csv"])
-
-
 def user_id_of(user, role):
     return user[ROLES[role]["id_key"]]
-
-
-def find_user_by_email(email):
-    """Return (user, role) for the first match across both roles, else (None, None)."""
-    wanted = email.strip().lower()
-    for role in ROLES:
-        for user in read_users(role):
-            if user.get("email", "").strip().lower() == wanted:
-                return user, role
-    return None, None
 
 
 def find_user_by_id(user_id, role):
     if role not in ROLES:
         return None
-    id_key = ROLES[role]["id_key"]
-    return next((u for u in read_users(role) if u.get(id_key) == user_id), None)
+    snap = get_db().collection(ROLES[role]["collection"]).document(user_id).get()
+    return snap.to_dict() if snap.exists else None
 
 
-def next_user_id(role, rows):
-    """P001, P002, ... / O001, O002, ..."""
+def find_user_by_email(email):
+    """Return (user, role) for this email across both roles, else (None, None)."""
+    index = get_db().collection(EMAIL_INDEX).document(email.strip().lower()).get()
+    if not index.exists:
+        return None, None
+    entry = index.to_dict()
+    user = find_user_by_id(entry["user_id"], entry["role"])
+    return (user, entry["role"]) if user else (None, None)
+
+
+@firestore.transactional
+def _create_user_in_txn(txn, db, role, email, fields):
+    """All-or-nothing: claim the email, take the next ID, save the user."""
     cfg = ROLES[role]
-    prefix, id_key = cfg["id_prefix"], cfg["id_key"]
-    numbers = [
-        int(row[id_key][len(prefix):])
-        for row in rows
-        if row.get(id_key, "").startswith(prefix) and row[id_key][len(prefix):].isdigit()
-    ]
-    return f"{prefix}{max(numbers, default=0) + 1:03d}"
+    email_ref = db.collection(EMAIL_INDEX).document(email)
+    counter_ref = db.collection(COUNTERS).document(role)
+
+    # Firestore transactions: all reads first, then writes.
+    email_snap = email_ref.get(transaction=txn)
+    if email_snap.exists:
+        return None, email_snap.to_dict()["role"]
+    counter_snap = counter_ref.get(transaction=txn)
+
+    current = counter_snap.to_dict().get("value", 0) if counter_snap.exists else 0
+    number = current + 1
+    user_id = f"{cfg['id_prefix']}{number:03d}"
+
+    user = dict.fromkeys(cfg["fields"], "")
+    user.update(profile_complete="false", created_at=now_iso(), last_login=now_iso())
+    user.update(fields)
+    user.update(email=email, **{cfg["id_key"]: user_id})
+
+    txn.set(counter_ref, {"value": number})
+    txn.set(db.collection(cfg["collection"]).document(user_id), user)
+    txn.set(email_ref, {"role": role, "user_id": user_id})
+    return user, None
 
 
-def create_user(role, **fields):
-    """Append a new user row (blank for any field not given) and return it."""
-    cfg = ROLES[role]
-    with csv_lock:
-        rows = read_csv(cfg["csv"])
-        user = dict.fromkeys(cfg["headers"], "")
-        user.update(profile_complete="false", created_at=now_iso(), last_login=now_iso())
-        user.update(fields)
-        user[cfg["id_key"]] = next_user_id(role, rows)
-        rows.append(user)
-        write_csv(cfg["csv"], cfg["headers"], rows)
-    return user
+def create_user(role, email, **fields):
+    """Returns (user, None) on success, or (None, existing_role) if the email is taken."""
+    db = get_db()
+    return _create_user_in_txn(db.transaction(), db, role, email, fields)
 
 
 def update_user(role, user_id, changes):
-    cfg = ROLES[role]
-    with csv_lock:
-        rows = read_csv(cfg["csv"])
-        for row in rows:
-            if row[cfg["id_key"]] == user_id:
-                row.update(changes)
-                break
-        write_csv(cfg["csv"], cfg["headers"], rows)
+    get_db().collection(ROLES[role]["collection"]).document(user_id).update(changes)
 
 
 def is_profile_complete(user, role):
@@ -223,10 +210,12 @@ def api_success(message, redirect_url):
     return jsonify({"success": True, "message": message, "redirect_url": redirect_url})
 
 
-def role_mismatch_error(existing_role):
-    return api_error(
-        f"This email is registered as {ROLES[existing_role]['label']}. Please use the correct tab."
-    )
+def email_taken_error(existing_role, role):
+    if existing_role != role:
+        return api_error(
+            f"This email is registered as {ROLES[existing_role]['label']}. Please use the correct tab."
+        )
+    return api_error("An account with this email already exists. Please log in.")
 
 
 def dashboard_url(role):
@@ -251,6 +240,20 @@ def login_required(view):
         return view(*args, **kwargs)
 
     return wrapper
+
+
+@app.errorhandler(Exception)
+def handle_error(exc):
+    """API routes always answer with JSON, so the frontend never sees an HTML error page."""
+    is_http = isinstance(exc, HTTPException)
+    if not is_http:
+        app.logger.exception("Unhandled error on %s", request.path)
+
+    if request.path.startswith("/api/"):
+        status = exc.code if is_http else 500
+        message = exc.description if is_http else "Server error. Please try again."
+        return api_error(message, status)
+    return exc if is_http else ("Internal Server Error", 500)
 
 
 # ==================== PAGES ====================
@@ -316,27 +319,22 @@ def api_signup():
         return api_error("Invalid role specified.")
     if not full_name:
         return api_error("Please enter your full name.", field="full_name")
-    if "@" not in email:
+    if "@" not in email or "/" in email:
         return api_error("Please enter a valid email address.", field="email")
     if len(password) < MIN_PASSWORD_LENGTH:
         return api_error(f"Password must be at least {MIN_PASSWORD_LENGTH} characters long.", field="password")
     if password != confirm_password:
         return api_error("Passwords do not match.", field="confirm_password")
 
-    with csv_lock:  # check + create together, so two signups can't use the same email
-        existing_user, existing_role = find_user_by_email(email)
-        if existing_user:
-            if existing_role != role:
-                return role_mismatch_error(existing_role)
-            return api_error("An account with this email already exists. Please log in.")
-
-        user = create_user(
-            role,
-            full_name=full_name,
-            email=email,
-            password_hash=generate_password_hash(password),
-            auth_provider="password",
-        )
+    user, existing_role = create_user(
+        role,
+        email,
+        full_name=full_name,
+        password_hash=generate_password_hash(password),
+        auth_provider="password",
+    )
+    if existing_role:
+        return email_taken_error(existing_role, role)
 
     start_session(user, role)
     return api_success("Account created successfully!", url_for("complete_profile"))
@@ -356,7 +354,7 @@ def api_login():
     if not user:
         return api_error("No account found with this email address.", 404)
     if user_role != role:
-        return role_mismatch_error(user_role)
+        return email_taken_error(user_role, role)
 
     stored_hash = user.get("password_hash", "")
     if not stored_hash or not check_password_hash(stored_hash, password):
@@ -379,36 +377,35 @@ def api_google_auth():
         return api_error("Invalid role.")
 
     try:
-        claims = google_id_token.verify_firebase_token(
-            token, google_requests.Request(), audience=FIREBASE_PROJECT_ID
-        )
+        init_firebase()
+        # clock_skew_seconds avoids random "Token used too early" errors
+        claims = firebase_auth.verify_id_token(token, clock_skew_seconds=10)
     except Exception as exc:
         app.logger.warning("Google token verification failed: %s", exc)
         return api_error("Google token verification failed. Please try again.", 401)
 
     email = (claims.get("email") or "").strip().lower()
     name = claims.get("name", "Google User")
-    google_uid = claims.get("sub") or claims.get("user_id", "")
+    google_uid = claims.get("uid") or claims.get("sub", "")
 
     if not email:
         return api_error("Google account does not contain a verified email.")
 
-    with csv_lock:
-        existing_user, existing_role = find_user_by_email(email)
+    user, existing_role = find_user_by_email(email)
 
-        if existing_user:
-            if existing_role != role:
-                return role_mismatch_error(existing_role)
-            changes = {"last_login": now_iso()}
-            if not existing_user.get("google_uid"):
-                changes["google_uid"] = google_uid
-            update_user(role, user_id_of(existing_user, role), changes)
-            user = existing_user
-        else:
-            user = create_user(
-                role, full_name=name, email=email,
-                auth_provider="google", google_uid=google_uid,
-            )
+    if user:
+        if existing_role != role:
+            return email_taken_error(existing_role, role)
+        changes = {"last_login": now_iso()}
+        if not user.get("google_uid"):
+            changes["google_uid"] = google_uid
+        update_user(role, user_id_of(user, role), changes)
+    else:
+        user, taken_by = create_user(
+            role, email, full_name=name, auth_provider="google", google_uid=google_uid
+        )
+        if taken_by:  # someone created this email a moment ago
+            return email_taken_error(taken_by, role)
 
     start_session(user, role)
     return api_success(f"Signed in as {email}!", landing_url(user, role))
@@ -431,20 +428,16 @@ def complete_participant_profile(user_id, data, phone):
     if not roll_number:
         return api_error("Roll Number is required.", field="roll_number")
 
-    with csv_lock:  # roll-number check + save together
-        roll_taken = any(
-            p.get("participant_id") != user_id and p.get("roll_number", "").strip().upper() == roll_number
-            for p in read_users("participant")
+    owners = query_docs(ROLES["participant"]["collection"], "roll_number", "==", roll_number)
+    if any(owner.get("participant_id") != user_id for owner in owners):
+        return api_error(
+            "This Roll Number is already registered by another participant.", field="roll_number"
         )
-        if roll_taken:
-            return api_error(
-                "This Roll Number is already registered by another participant.", field="roll_number"
-            )
-        update_user("participant", user_id, {
-            "college": college, "roll_number": roll_number,
-            "phone": phone, "profile_complete": "true",
-        })
 
+    update_user("participant", user_id, {
+        "college": college, "roll_number": roll_number,
+        "phone": phone, "profile_complete": "true",
+    })
     return api_success("Profile completed successfully!", url_for("student_dashboard"))
 
 
@@ -488,7 +481,7 @@ def api_complete_profile():
 # ==================== DASHBOARD APIS ====================
 
 def is_checked_in(registration):
-    return str(registration.get("checked_in", "0")) == "1"
+    return str(registration.get("checked_in", "0")) in ("1", "True", "true")
 
 
 @app.route("/api/participant/me")
@@ -502,7 +495,8 @@ def api_participant_me():
         return jsonify({"error": "User not found"}), 404
 
     email = user.get("email", "").strip().lower()
-    my_regs = [r for r in read_csv(REGISTRATIONS_CSV) if r.get("email", "").strip().lower() == email]
+    my_regs = query_docs(REGISTRATIONS, "email", "==", email)
+    all_events = [doc.to_dict() for doc in get_db().collection(EVENTS).stream()]
 
     return jsonify({
         **pick(user, ROLES["participant"]["public_fields"]),
@@ -511,7 +505,7 @@ def api_participant_me():
             "passes": len(my_regs),
             "checked_in": sum(is_checked_in(r) for r in my_regs),
         },
-        "events": read_csv(EVENTS_CSV),
+        "events": all_events,
         "passes_list": my_regs,
     })
 
@@ -527,9 +521,13 @@ def api_organizer_me():
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    my_events = [e for e in read_csv(EVENTS_CSV) if e.get("organizer_id") == user_id]
-    my_event_ids = {e.get("event_id") for e in my_events}
-    my_regs = [r for r in read_csv(REGISTRATIONS_CSV) if r.get("event_id") in my_event_ids]
+    my_events = query_docs(EVENTS, "organizer_id", "==", user_id)
+    event_ids = [e["event_id"] for e in my_events if e.get("event_id")]
+
+    my_regs = []
+    for start in range(0, len(event_ids), FIRESTORE_IN_LIMIT):
+        chunk = event_ids[start:start + FIRESTORE_IN_LIMIT]
+        my_regs += query_docs(REGISTRATIONS, "event_id", "in", chunk)
 
     total_capacity = sum(to_int(e.get("capacity")) for e in my_events)
     capacity_used = f"{len(my_regs) / total_capacity * 100:.1f}%" if total_capacity else "0%"
