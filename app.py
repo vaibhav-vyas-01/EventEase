@@ -352,7 +352,7 @@ def api_google_auth():
         decoded_token = google_id_token.verify_firebase_token(
             id_token_str,
             req,
-            audience="festgate-5a369"
+            audience="festgate-a1f30"
         )
     except Exception as e:
         return jsonify({'success': False, 'message': f'Google token verification failed: {str(e)}'}), 401
