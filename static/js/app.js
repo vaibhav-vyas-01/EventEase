@@ -1,456 +1,431 @@
 /**
- * FESTGATE SPLIT-SCREEN AUTH CONTROLLER
- * Manages Role Switching (Participant vs Organizer),
- * Mode Switching (Login vs Sign-up), Password Toggle, Testimonial Carousel,
- * Form Validations, and AJAX Authentication (Password & Google Firebase).
+ * FestGate split-screen auth controller.
+ *
+ * - Role switching (Participant / Organizer)
+ * - Mode switching (Log in / Sign up)
+ * - Password visibility toggle
+ * - Testimonial carousel
+ * - Form validation + auth requests (email/password and Google via Firebase)
  */
 
 import { auth, googleProvider, signInWithPopup } from './firebase-config.js';
 
-// Toast Notification Utility
+/* ==========================================================================
+   CONSTANTS
+   ========================================================================== */
+
+const MIN_PASSWORD_LENGTH = 8;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REDIRECT_DELAY_MS = 400;
+const TOAST_DURATION_MS = 4000;
+const CAROUSEL_INTERVAL_MS = 6000;
+const CAROUSEL_FADE_MS = 180;
+
+const TESTIMONIALS = [
+  {
+    quote: 'FestGate made entry management effortless during our annual cultural fest. Over 2,500 students checked in smoothly without any gate bottlenecks!',
+    name: 'Aarav Sharma',
+    role: 'Lead Coordinator, Campus Fest Council',
+    initials: 'AS',
+  },
+  {
+    quote: "The instant QR pass and duplicate-email block made our 48-hour hackathon check-in the fastest we've ever conducted.",
+    name: 'Tanvi Deshmukh',
+    role: 'Hackathon Lead, Tech Club',
+    initials: 'TD',
+  },
+  {
+    quote: 'Having every college event under one gate saves our volunteer team hours of manual verification work every semester.',
+    name: 'Rahul Verma',
+    role: 'Student Council President',
+    initials: 'RV',
+  },
+];
+
+// All text that changes between Log in / Sign up lives here, not in the logic.
+const FORM_COPY = {
+  login: {
+    prompt: "Don't have an account?",
+    switchLabel: 'Sign up',
+    divider: 'Or log in with email',
+    submit: 'Log in',
+    legal: 'By logging in, you agree to our Terms of Service and Privacy Policy',
+    roles: {
+      participant: {
+        title: 'Log in to FestGate',
+        subtitle: 'Log in to get your event pass',
+        emailLabel: 'Email address',
+        placeholder: 'you@college.edu',
+      },
+      organizer: {
+        title: 'Log in to FestGate',
+        subtitle: 'Log in to manage your campus events',
+        emailLabel: 'Email address',
+        placeholder: 'you@college.edu',
+      },
+    },
+  },
+  signup: {
+    prompt: 'Already have an account?',
+    switchLabel: 'Log in',
+    divider: 'Or sign up with email',
+    submit: 'Create Account',
+    legal: 'By creating your account, you agree to our Terms of Service and Privacy Policy',
+    roles: {
+      participant: {
+        title: 'Join FestGate',
+        subtitle: 'Create your attendee account to get instant event passes',
+        emailLabel: 'Student Email',
+        placeholder: 'alex@college.edu',
+      },
+      organizer: {
+        title: 'Create Organizer Account',
+        subtitle: 'Set up your club or committee profile to host campus events',
+        emailLabel: 'Official / Club Email',
+        placeholder: 'club.lead@college.edu',
+      },
+    },
+  },
+};
+
+/* ==========================================================================
+   SHARED HELPERS
+   ========================================================================== */
+
+const byId = (id) => document.getElementById(id);
+
 export function showToast(message, type = 'success') {
-  const container = document.getElementById('toastContainer');
+  const container = byId('toastContainer');
   if (!container) return;
+
+  const icon = document.createElement('span');
+  icon.textContent = type === 'success' ? '✓' : '⚠️';
+  const text = document.createElement('span');
+  text.textContent = message; // textContent: server messages can't inject HTML
+
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
-  toast.innerHTML = `
-    <span>${type === 'success' ? '✓' : '⚠️'}</span>
-    <span>${message}</span>
-  `;
+  toast.append(icon, text);
   container.appendChild(toast);
 
   setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(10px)';
-    toast.style.transition = 'all 0.3s ease';
+    toast.style.cssText += 'opacity:0;transform:translateY(10px);transition:all 0.3s ease;';
     setTimeout(() => toast.remove(), 300);
-  }, 4000);
+  }, TOAST_DURATION_MS);
 }
 window.showToast = showToast;
 
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  return { ok: res.ok, data };
+}
+
+function redirectAfterSuccess(data) {
+  if (data.redirect_url) {
+    setTimeout(() => { window.location.href = data.redirect_url; }, REDIRECT_DELAY_MS);
+  }
+}
+
+const setDisplay = (el, value) => { if (el) el.style.display = value; };
+
+/* ==========================================================================
+   MAIN
+   ========================================================================== */
+
 document.addEventListener('DOMContentLoaded', () => {
-  // Elements: Switcher
-  const topSwitchBtn = document.getElementById('topSwitchBtn');
-  const topPromptText = document.getElementById('topPromptText');
-  const formTitle = document.getElementById('formTitle');
-  const formSubtitle = document.getElementById('formSubtitle');
-  const dividerLabel = document.getElementById('dividerLabel');
-  const nameGroup = document.getElementById('nameGroup');
-  const clubGroup = document.getElementById('clubGroup');
-  const confirmPasswordGroup = document.getElementById('confirmPasswordGroup');
-  const forgotPassLink = document.getElementById('forgotPassLink');
-  const submitBtn = document.getElementById('submitBtn');
-  const submitBtnLabel = document.getElementById('submitBtnLabel');
-  const legalText = document.getElementById('legalText');
-  const emailLabel = document.getElementById('emailLabel');
-  const googleSignInBtn = document.getElementById('googleSignInBtn');
+  /* ---------- Elements ---------- */
+  const el = {
+    form: byId('authForm'),
+    topPrompt: byId('topPromptText'),
+    topSwitchBtn: byId('topSwitchBtn'),
+    title: byId('formTitle'),
+    subtitle: byId('formSubtitle'),
+    divider: byId('dividerLabel'),
+    emailLabel: byId('emailLabel'),
+    legal: byId('legalText'),
+    submitBtn: byId('submitBtn'),
+    submitLabel: byId('submitBtnLabel'),
+    googleBtn: byId('googleSignInBtn'),
+    forgotLink: byId('forgotPassLink'),
+    nameGroup: byId('nameGroup'),
+    clubGroup: byId('clubGroup'),
+    confirmGroup: byId('confirmPasswordGroup'),
+    pwdToggleBtn: byId('pwdToggleBtn'),
+    eyeShow: document.querySelector('.eye-show'),
+    eyeHide: document.querySelector('.eye-hide'),
+    tabs: { participant: byId('tabParticipant'), organizer: byId('tabOrganizer') },
+  };
 
-  // Tabs: Participant / Organizer
-  const tabParticipant = document.getElementById('tabParticipant');
-  const tabOrganizer = document.getElementById('tabOrganizer');
+  // Each field = its input + its error message span.
+  const fields = {
+    name: { input: byId('fullName'), error: byId('nameError') },
+    club: { input: byId('clubName'), error: byId('clubError') },
+    email: { input: byId('email'), error: byId('emailError') },
+    password: { input: byId('password'), error: byId('passwordError') },
+    confirmPassword: { input: byId('confirmPassword'), error: byId('confirmPasswordError') },
+  };
 
-  // Form & inputs
-  const authForm = document.getElementById('authForm');
-  const fullNameInput = document.getElementById('fullName');
-  const clubNameInput = document.getElementById('clubName');
-  const emailInput = document.getElementById('email');
-  const passwordInput = document.getElementById('password');
-  const confirmPasswordInput = document.getElementById('confirmPassword');
-  const pwdToggleBtn = document.getElementById('pwdToggleBtn');
-  const eyeShow = document.querySelector('.eye-show');
-  const eyeHide = document.querySelector('.eye-hide');
+  const state = { mode: 'login', role: 'participant' };
 
-  // Error Message Spans
-  const nameError = document.getElementById('nameError');
-  const clubError = document.getElementById('clubError');
-  const emailError = document.getElementById('emailError');
-  const passwordError = document.getElementById('passwordError');
-  const confirmPasswordError = document.getElementById('confirmPasswordError');
+  /* ---------- Field errors ---------- */
+  function showFieldError(fieldName, message) {
+    const field = fields[fieldName];
+    if (!field) return false;
+    if (field.error) field.error.textContent = message;
+    field.input?.classList.add('is-invalid');
+    return true;
+  }
 
-  // Testimonials Carousel Data & Elements
-  const quoteText = document.getElementById('quoteText');
-  const authorAvatarInitials = document.getElementById('authorAvatarInitials');
-  const authorName = document.getElementById('authorName');
-  const authorRole = document.getElementById('authorRole');
-  const dotBtns = document.querySelectorAll('.dot-btn');
+  function clearErrors() {
+    Object.values(fields).forEach(({ error }) => { if (error) error.textContent = ''; });
+    document.querySelectorAll('.form-input').forEach((input) => input.classList.remove('is-invalid'));
+  }
 
-  // State: 'login' or 'signup', and role: 'participant' or 'organizer'
-  let currentMode = 'login';
-  let currentRole = 'participant';
-
-  const testimonials = [
-    {
-      quote: "FestGate made entry management effortless during our annual cultural fest. Over 2,500 students checked in smoothly without any gate bottlenecks!",
-      name: "Aarav Sharma",
-      role: "Lead Coordinator, Campus Fest Council",
-      initials: "AS"
-    },
-    {
-      quote: "The instant QR pass and duplicate-email block made our 48-hour hackathon check-in the fastest we've ever conducted.",
-      name: "Tanvi Deshmukh",
-      role: "Hackathon Lead, Tech Club",
-      initials: "TD"
-    },
-    {
-      quote: "Having every college event under one gate saves our volunteer team hours of manual verification work every semester.",
-      name: "Rahul Verma",
-      role: "Student Council President",
-      initials: "RV"
-    }
-  ];
-
-  let currentSlide = 0;
-  let slideInterval = null;
-
-  /* ==========================================================================
-     1. FORM VIEW UPDATER
-     ========================================================================== */
+  /* ---------- 1. Form view (mode + role) ---------- */
   function updateFormView() {
     clearErrors();
 
-    if (currentMode === 'login') {
-      topPromptText.textContent = "Don't have an account?";
-      topSwitchBtn.textContent = 'Sign up';
-      dividerLabel.textContent = 'Or log in with email';
-      submitBtnLabel.textContent = 'Log in';
-      emailLabel.textContent = 'Email address';
-      emailInput.placeholder = 'you@college.edu';
+    const isSignup = state.mode === 'signup';
+    const copy = FORM_COPY[state.mode];
+    const roleCopy = copy.roles[state.role];
 
-      if (currentRole === 'organizer') {
-        formTitle.textContent = 'Log in to FestGate';
-        formSubtitle.textContent = 'Log in to manage your campus events';
-      } else {
-        formTitle.textContent = 'Log in to FestGate';
-        formSubtitle.textContent = 'Log in to get your event pass';
-      }
+    el.topPrompt.textContent = copy.prompt;
+    el.topSwitchBtn.textContent = copy.switchLabel;
+    el.divider.textContent = copy.divider;
+    el.submitLabel.textContent = copy.submit;
+    el.legal.textContent = copy.legal;
+    el.title.textContent = roleCopy.title;
+    el.subtitle.textContent = roleCopy.subtitle;
+    el.emailLabel.textContent = roleCopy.emailLabel;
+    fields.email.input.placeholder = roleCopy.placeholder;
 
-      // Hide signup-specific inputs
-      if (nameGroup) nameGroup.style.display = 'none';
-      if (clubGroup) clubGroup.style.display = 'none';
-      if (confirmPasswordGroup) confirmPasswordGroup.style.display = 'none';
-      if (forgotPassLink) forgotPassLink.style.display = 'inline';
+    setDisplay(el.nameGroup, isSignup ? 'flex' : 'none');
+    setDisplay(el.confirmGroup, isSignup ? 'flex' : 'none');
+    setDisplay(el.forgotLink, isSignup ? 'none' : 'inline');
+    setDisplay(el.clubGroup, 'none'); // club details are collected later, in profile completion
 
-      legalText.textContent = 'By logging in, you agree to our Terms of Service and Privacy Policy';
-
-      fullNameInput.removeAttribute('required');
-      if (clubNameInput) clubNameInput.removeAttribute('required');
-      if (confirmPasswordInput) confirmPasswordInput.removeAttribute('required');
-
-    } else {
-      // Sign-up mode
-      topPromptText.textContent = 'Already have an account?';
-      topSwitchBtn.textContent = 'Log in';
-      dividerLabel.textContent = 'Or sign up with email';
-      submitBtnLabel.textContent = 'Create Account';
-      emailLabel.textContent = currentRole === 'organizer' ? 'Official / Club Email' : 'Student Email';
-      emailInput.placeholder = currentRole === 'organizer' ? 'club.lead@college.edu' : 'alex@college.edu';
-
-      if (currentRole === 'organizer') {
-        formTitle.textContent = 'Create Organizer Account';
-        formSubtitle.textContent = 'Set up your club or committee profile to host campus events';
-        if (clubGroup) clubGroup.style.display = 'none'; // Organizer profile fields handled in profile completion
-      } else {
-        formTitle.textContent = 'Join FestGate';
-        formSubtitle.textContent = 'Create your attendee account to get instant event passes';
-        if (clubGroup) clubGroup.style.display = 'none';
-      }
-
-      // Show name and confirm password
-      if (nameGroup) nameGroup.style.display = 'flex';
-      if (confirmPasswordGroup) confirmPasswordGroup.style.display = 'flex';
-      if (forgotPassLink) forgotPassLink.style.display = 'none';
-
-      legalText.textContent = 'By creating your account, you agree to our Terms of Service and Privacy Policy';
-
-      fullNameInput.setAttribute('required', 'true');
-      if (confirmPasswordInput) confirmPasswordInput.setAttribute('required', 'true');
-    }
+    fields.name.input.required = isSignup;
+    if (fields.confirmPassword.input) fields.confirmPassword.input.required = isSignup;
+    if (fields.club.input) fields.club.input.required = false;
   }
 
-  // Toggle Mode (Login <--> Sign up)
-  topSwitchBtn.addEventListener('click', () => {
-    currentMode = currentMode === 'login' ? 'signup' : 'login';
+  el.topSwitchBtn.addEventListener('click', () => {
+    state.mode = state.mode === 'login' ? 'signup' : 'login';
     updateFormView();
   });
 
-  /* ==========================================================================
-     2. SEGMENTED ROLE TABS (Participant / Organizer)
-     ========================================================================== */
+  /* ---------- 2. Role tabs ---------- */
+  const TAB_LABELS = { participant: 'Participant', organizer: 'Organizer' };
+
   function setActiveRole(role) {
-    currentRole = role;
-    if (role === 'participant') {
-      tabParticipant.classList.add('active');
-      tabParticipant.setAttribute('aria-selected', 'true');
-      tabParticipant.innerHTML = 'Participant <span class="active-indicator"></span>';
+    state.role = role;
 
-      tabOrganizer.classList.remove('active');
-      tabOrganizer.setAttribute('aria-selected', 'false');
-      tabOrganizer.innerHTML = 'Organizer';
-    } else {
-      tabOrganizer.classList.add('active');
-      tabOrganizer.setAttribute('aria-selected', 'true');
-      tabOrganizer.innerHTML = 'Organizer <span class="active-indicator"></span>';
+    Object.entries(el.tabs).forEach(([tabRole, tab]) => {
+      const isActive = tabRole === role;
+      tab.classList.toggle('active', isActive);
+      tab.setAttribute('aria-selected', String(isActive));
+      tab.innerHTML = isActive
+        ? `${TAB_LABELS[tabRole]} <span class="active-indicator"></span>`
+        : TAB_LABELS[tabRole];
+    });
 
-      tabParticipant.classList.remove('active');
-      tabParticipant.setAttribute('aria-selected', 'false');
-      tabParticipant.innerHTML = 'Participant';
-    }
     updateFormView();
   }
 
-  tabParticipant.addEventListener('click', () => setActiveRole('participant'));
-  tabOrganizer.addEventListener('click', () => setActiveRole('organizer'));
+  el.tabs.participant.addEventListener('click', () => setActiveRole('participant'));
+  el.tabs.organizer.addEventListener('click', () => setActiveRole('organizer'));
 
-  /* ==========================================================================
-     3. PASSWORD VISIBILITY TOGGLE
-     ========================================================================== */
-  pwdToggleBtn.addEventListener('click', () => {
-    const isPassword = passwordInput.getAttribute('type') === 'password';
-    if (isPassword) {
-      passwordInput.setAttribute('type', 'text');
-      eyeShow.style.display = 'none';
-      eyeHide.style.display = 'inline';
-    } else {
-      passwordInput.setAttribute('type', 'password');
-      eyeShow.style.display = 'inline';
-      eyeHide.style.display = 'none';
+  /* ---------- 3. Password visibility ---------- */
+  el.pwdToggleBtn.addEventListener('click', () => {
+    const passwordInput = fields.password.input;
+    const willShow = passwordInput.type === 'password';
+
+    passwordInput.type = willShow ? 'text' : 'password';
+    setDisplay(el.eyeShow, willShow ? 'none' : 'inline');
+    setDisplay(el.eyeHide, willShow ? 'inline' : 'none');
+  });
+
+  /* ---------- 4. Google sign-in (Firebase) ---------- */
+  el.googleBtn?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    clearErrors();
+
+    el.googleBtn.disabled = true;
+    el.googleBtn.style.opacity = '0.7';
+
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const idToken = await result.user.getIdToken();
+
+      const { ok, data } = await postJson('/api/auth/google', {
+        id_token: idToken,
+        role: state.role,
+      });
+
+      if (!ok) {
+        showToast(data.message || 'Google sign-in failed.', 'error');
+        return;
+      }
+      showToast(data.message || 'Signed in successfully!', 'success');
+      redirectAfterSuccess(data);
+    } catch (err) {
+      console.error('Google sign-in error:', err);
+      showToast(err.message || 'Google sign-in was canceled or failed.', 'error');
+    } finally {
+      el.googleBtn.disabled = false;
+      el.googleBtn.style.opacity = '1';
     }
   });
 
-  /* ==========================================================================
-     4. GOOGLE SIGN-IN VIA FIREBASE
-     ========================================================================== */
-  if (googleSignInBtn) {
-    googleSignInBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      clearErrors();
+  /* ---------- 5. Testimonial carousel ---------- */
+  const quote = {
+    text: byId('quoteText'),
+    avatar: byId('authorAvatarInitials'),
+    name: byId('authorName'),
+    role: byId('authorRole'),
+    dots: document.querySelectorAll('.dot-btn'),
+    card: byId('testimonialCard'),
+  };
 
-      try {
-        googleSignInBtn.disabled = true;
-        googleSignInBtn.style.opacity = '0.7';
+  let currentSlide = 0;
+  let autoplayTimer = null;
 
-        const result = await signInWithPopup(auth, googleProvider);
-        const idToken = await result.user.getIdToken();
-
-        // Send ID token and currentRole to backend
-        const res = await fetch('/api/auth/google', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id_token: idToken,
-            role: currentRole
-          })
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          showToast(data.message || 'Google sign-in failed.', 'error');
-          return;
-        }
-
-        showToast(data.message || 'Signed in successfully!', 'success');
-        if (data.redirect_url) {
-          setTimeout(() => {
-            window.location.href = data.redirect_url;
-          }, 400);
-        }
-      } catch (err) {
-        console.error('Google Sign-in Error:', err);
-        showToast(err.message || 'Google sign-in was canceled or failed.', 'error');
-      } finally {
-        googleSignInBtn.disabled = false;
-        googleSignInBtn.style.opacity = '1';
-      }
-    });
-  }
-
-  /* ==========================================================================
-     5. TESTIMONIAL CAROUSEL
-     ========================================================================== */
   function showSlide(index) {
     currentSlide = index;
-    const slide = testimonials[index];
+    const slide = TESTIMONIALS[index];
 
-    quoteText.style.opacity = '0';
-    quoteText.style.transform = 'translateY(6px)';
+    quote.text.style.opacity = '0';
+    quote.text.style.transform = 'translateY(6px)';
 
     setTimeout(() => {
-      quoteText.textContent = `"${slide.quote}"`;
-      authorName.textContent = slide.name;
-      authorRole.textContent = slide.role;
-      if (authorAvatarInitials) {
-        authorAvatarInitials.textContent = slide.initials;
-      }
+      quote.text.textContent = `"${slide.quote}"`;
+      quote.name.textContent = slide.name;
+      quote.role.textContent = slide.role;
+      if (quote.avatar) quote.avatar.textContent = slide.initials;
 
-      quoteText.style.opacity = '1';
-      quoteText.style.transform = 'translateY(0)';
-    }, 180);
+      quote.text.style.opacity = '1';
+      quote.text.style.transform = 'translateY(0)';
+    }, CAROUSEL_FADE_MS);
 
-    dotBtns.forEach((dot, idx) => {
-      if (idx === index) {
-        dot.classList.add('active');
-        dot.setAttribute('aria-selected', 'true');
-      } else {
-        dot.classList.remove('active');
-        dot.setAttribute('aria-selected', 'false');
-      }
+    quote.dots.forEach((dot, i) => {
+      dot.classList.toggle('active', i === index);
+      dot.setAttribute('aria-selected', String(i === index));
     });
+  }
+
+  function stopAutoplay() {
+    clearInterval(autoplayTimer);
   }
 
   function startAutoplay() {
     stopAutoplay();
-    slideInterval = setInterval(() => {
-      const nextSlide = (currentSlide + 1) % testimonials.length;
-      showSlide(nextSlide);
-    }, 6000);
+    autoplayTimer = setInterval(
+      () => showSlide((currentSlide + 1) % TESTIMONIALS.length),
+      CAROUSEL_INTERVAL_MS,
+    );
   }
 
-  function stopAutoplay() {
-    if (slideInterval) clearInterval(slideInterval);
-  }
-
-  dotBtns.forEach((dot) => {
-    dot.addEventListener('click', (e) => {
-      const idx = parseInt(e.target.getAttribute('data-index'), 10);
-      showSlide(idx);
+  quote.dots.forEach((dot) => {
+    dot.addEventListener('click', () => {
+      showSlide(Number(dot.dataset.index));
       startAutoplay();
     });
   });
 
-  const testimonialCard = document.getElementById('testimonialCard');
-  if (testimonialCard) {
-    testimonialCard.addEventListener('mouseenter', stopAutoplay);
-    testimonialCard.addEventListener('mouseleave', startAutoplay);
-  }
-
+  quote.card?.addEventListener('mouseenter', stopAutoplay);
+  quote.card?.addEventListener('mouseleave', startAutoplay);
   startAutoplay();
 
-  /* ==========================================================================
-     6. VALIDATION & SUBMISSION
-     ========================================================================== */
-  function clearErrors() {
-    [nameError, clubError, emailError, passwordError, confirmPasswordError].forEach((el) => {
-      if (el) el.textContent = '';
-    });
-    document.querySelectorAll('.form-input').forEach((input) => {
-      input.classList.remove('is-invalid');
-    });
+  /* ---------- 6. Validation & submit ---------- */
+  /** Returns a list of { field, message } problems (empty list = valid). */
+  function validate({ name, email, password, confirmPassword }) {
+    const problems = [];
+
+    if (state.mode === 'signup') {
+      if (!name) {
+        problems.push({ field: 'name', message: 'Please enter your full name.' });
+      }
+      if (!confirmPassword) {
+        problems.push({ field: 'confirmPassword', message: 'Please confirm your password.' });
+      } else if (password !== confirmPassword) {
+        problems.push({ field: 'confirmPassword', message: 'Passwords do not match.' });
+      }
+    }
+
+    if (!email) {
+      problems.push({ field: 'email', message: 'Please enter your email.' });
+    } else if (!EMAIL_PATTERN.test(email)) {
+      problems.push({ field: 'email', message: 'Please enter a valid email address.' });
+    }
+
+    if (!password) {
+      problems.push({ field: 'password', message: 'Please enter your password.' });
+    } else if (password.length < MIN_PASSWORD_LENGTH) {
+      problems.push({
+        field: 'password',
+        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+      });
+    }
+
+    return problems;
   }
 
-  function validateEmail(email) {
-    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return re.test(email);
-  }
-
-  authForm.addEventListener('submit', async (e) => {
+  el.form.addEventListener('submit', async (e) => {
     e.preventDefault();
     clearErrors();
 
-    let isValid = true;
-    const emailVal = emailInput.value.trim();
-    const passVal = passwordInput.value;
-    let nameVal = '';
-    let confirmVal = '';
+    const values = {
+      name: fields.name.input.value.trim(),
+      email: fields.email.input.value.trim(),
+      password: fields.password.input.value,
+      confirmPassword: fields.confirmPassword.input?.value ?? '',
+    };
 
-    if (currentMode === 'signup') {
-      nameVal = fullNameInput.value.trim();
-      if (!nameVal) {
-        nameError.textContent = 'Please enter your full name.';
-        fullNameInput.classList.add('is-invalid');
-        isValid = false;
-      }
-
-      if (confirmPasswordInput) {
-        confirmVal = confirmPasswordInput.value;
-        if (!confirmVal) {
-          confirmPasswordError.textContent = 'Please confirm your password.';
-          confirmPasswordInput.classList.add('is-invalid');
-          isValid = false;
-        } else if (passVal !== confirmVal) {
-          confirmPasswordError.textContent = 'Passwords do not match.';
-          confirmPasswordInput.classList.add('is-invalid');
-          isValid = false;
-        }
-      }
+    const problems = validate(values);
+    if (problems.length) {
+      problems.forEach(({ field, message }) => showFieldError(field, message));
+      return;
     }
 
-    if (!emailVal) {
-      emailError.textContent = 'Please enter your email.';
-      emailInput.classList.add('is-invalid');
-      isValid = false;
-    } else if (!validateEmail(emailVal)) {
-      emailError.textContent = 'Please enter a valid email address.';
-      emailInput.classList.add('is-invalid');
-      isValid = false;
-    }
-
-    if (!passVal) {
-      passwordError.textContent = 'Please enter your password.';
-      passwordInput.classList.add('is-invalid');
-      isValid = false;
-    } else if (passVal.length < 8) {
-      passwordError.textContent = 'Password must be at least 8 characters.';
-      passwordInput.classList.add('is-invalid');
-      isValid = false;
-    }
-
-    if (!isValid) return;
-
-    // Submit request to Flask backend
-    submitBtn.classList.add('is-loading');
-    submitBtn.disabled = true;
+    el.submitBtn.classList.add('is-loading');
+    el.submitBtn.disabled = true;
 
     try {
-      const endpoint = currentMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
-      const payload = {
-        email: emailVal,
-        password: passVal,
-        role: currentRole
-      };
-
-      if (currentMode === 'signup') {
-        payload.full_name = nameVal;
-        payload.confirm_password = confirmVal;
+      const isSignup = state.mode === 'signup';
+      const payload = { email: values.email, password: values.password, role: state.role };
+      if (isSignup) {
+        payload.full_name = values.name;
+        payload.confirm_password = values.confirmPassword;
       }
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const { ok, data } = await postJson(
+        isSignup ? '/api/auth/signup' : '/api/auth/login',
+        payload,
+      );
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        // Specific error display
-        if (data.field === 'email' && emailError) {
-          emailError.textContent = data.message;
-          emailInput.classList.add('is-invalid');
-        } else if (data.field === 'password' && passwordError) {
-          passwordError.textContent = data.message;
-          passwordInput.classList.add('is-invalid');
-        } else {
-          showToast(data.message || 'Authentication error', 'error');
-        }
+      if (!ok) {
+        // Show the error under the right field if the server says which one.
+        const shown = showFieldError(data.field, data.message);
+        if (!shown) showToast(data.message || 'Authentication error', 'error');
         return;
       }
 
       showToast(data.message || 'Success!', 'success');
-      if (data.redirect_url) {
-        setTimeout(() => {
-          window.location.href = data.redirect_url;
-        }, 400);
-      }
-
+      redirectAfterSuccess(data);
     } catch (err) {
       console.error('Auth submit error:', err);
       showToast('Network error while connecting to server.', 'error');
     } finally {
-      submitBtn.classList.remove('is-loading');
-      submitBtn.disabled = false;
+      el.submitBtn.classList.remove('is-loading');
+      el.submitBtn.disabled = false;
     }
   });
 
-  // Initial render
+  /* ---------- Initial render ---------- */
   updateFormView();
 });
