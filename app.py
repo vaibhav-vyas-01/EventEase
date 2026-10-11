@@ -1,6 +1,7 @@
 """FestGate backend — auth, profiles and dashboards (Firebase Firestore storage)."""
 import json
 import os
+from collections import Counter
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -23,6 +24,13 @@ FIREBASE_CREDENTIALS = os.environ.get("FIREBASE_CREDENTIALS", "")
 MIN_PASSWORD_LENGTH = 8
 PHONE_LENGTH = 10
 FIRESTORE_IN_LIMIT = 30  # Firestore allows max 30 values in an "in" query
+
+# Event form limits
+EVENT_CATEGORIES = ("TECH", "DESIGN", "CULTURAL", "GAMING", "WORKSHOP")
+MAX_TITLE_LENGTH = 100
+MAX_VENUE_LENGTH = 120
+MAX_DESCRIPTION_LENGTH = 1000
+MAX_CAPACITY = 100000
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = SECRET_KEY
@@ -233,10 +241,22 @@ def start_session(user, role):
 
 
 def login_required(view):
+    """For pages: send logged-out users back to the home page."""
     @wraps(view)
     def wrapper(*args, **kwargs):
         if not session.get("user_id") or not session.get("role"):
             return redirect(url_for("index"))
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def api_login_required(view):
+    """For API routes: answer logged-out users with JSON 401 (never an HTML redirect)."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_id") or not session.get("role"):
+            return api_error("Please log in to continue.", 401)
         return view(*args, **kwargs)
 
     return wrapper
@@ -485,7 +505,7 @@ def is_checked_in(registration):
 
 
 @app.route("/api/participant/me")
-@login_required
+@api_login_required
 def api_participant_me():
     if session["role"] != "participant":
         return jsonify({"error": "Unauthorized"}), 403
@@ -511,7 +531,7 @@ def api_participant_me():
 
 
 @app.route("/api/organizer/me")
-@login_required
+@api_login_required
 def api_organizer_me():
     if session["role"] != "organizer":
         return jsonify({"error": "Unauthorized"}), 403
@@ -529,6 +549,15 @@ def api_organizer_me():
         chunk = event_ids[start:start + FIRESTORE_IN_LIMIT]
         my_regs += query_docs(REGISTRATIONS, "event_id", "in", chunk)
 
+    # Counts are always calculated from the registrations themselves,
+    # so they can never get out of sync with the real data.
+    registered_per_event = Counter(r.get("event_id") for r in my_regs)
+    checked_in_per_event = Counter(r.get("event_id") for r in my_regs if is_checked_in(r))
+    for event in my_events:
+        event["registered_count"] = registered_per_event[event.get("event_id")]
+        event["checked_in_count"] = checked_in_per_event[event.get("event_id")]
+    my_events.sort(key=lambda e: (e.get("date", ""), e.get("start_time", "")))
+
     total_capacity = sum(to_int(e.get("capacity")) for e in my_events)
     capacity_used = f"{len(my_regs) / total_capacity * 100:.1f}%" if total_capacity else "0%"
 
@@ -541,6 +570,113 @@ def api_organizer_me():
         },
         "events": my_events,
     })
+
+
+# ==================== ORGANIZER EVENTS ====================
+
+def parse_time(value):
+    """'HH:MM' -> datetime.time, or None if invalid."""
+    try:
+        return datetime.strptime(value, "%H:%M").time()
+    except ValueError:
+        return None
+
+
+def parse_event_payload(data):
+    """Validate the create-event form. Returns (fields, None) or (None, error_response)."""
+    title = clean(data, "title")
+    category = clean(data, "category").upper() or "TECH"
+    date_text = clean(data, "date")
+    start_text = clean(data, "start_time")
+    end_text = clean(data, "end_time")
+    venue = clean(data, "venue")
+    description = clean(data, "description")
+    capacity = to_int(data.get("capacity"))
+
+    if not title:
+        return None, api_error("Event title is required.", field="title")
+    if len(title) > MAX_TITLE_LENGTH:
+        return None, api_error(f"Title can be at most {MAX_TITLE_LENGTH} characters.", field="title")
+    if category not in EVENT_CATEGORIES:
+        return None, api_error("Please choose a valid category.", field="category")
+
+    try:
+        event_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+    except ValueError:
+        return None, api_error("Please choose a valid date.", field="date")
+
+    start_time, end_time = parse_time(start_text), parse_time(end_text)
+    if not start_time:
+        return None, api_error("Please choose a valid start time.", field="start_time")
+    if not end_time:
+        return None, api_error("Please choose a valid end time.", field="end_time")
+    if end_time <= start_time:
+        return None, api_error("End time must be after the start time.", field="end_time")
+
+    if not venue:
+        return None, api_error("Venue is required.", field="venue")
+    if len(venue) > MAX_VENUE_LENGTH:
+        return None, api_error(f"Venue can be at most {MAX_VENUE_LENGTH} characters.", field="venue")
+    if not 1 <= capacity <= MAX_CAPACITY:
+        return None, api_error(f"Capacity must be between 1 and {MAX_CAPACITY}.", field="capacity")
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        return None, api_error(f"Description can be at most {MAX_DESCRIPTION_LENGTH} characters.", field="description")
+
+    return {
+        "title": title,
+        "category": category,
+        "date": event_date.isoformat(),
+        "start_time": start_time.strftime("%H:%M"),
+        "end_time": end_time.strftime("%H:%M"),
+        "venue": venue,
+        "description": description,
+        "capacity": capacity,
+    }, None
+
+
+@app.route("/api/organizer/events", methods=["POST"])
+@api_login_required
+def api_create_event():
+    if session["role"] != "organizer":
+        return api_error("Only organizers can create events.", 403)
+
+    fields, error = parse_event_payload(request.get_json(silent=True) or {})
+    if error:
+        return error
+
+    doc_ref = get_db().collection(EVENTS).document()  # Firestore makes a unique ID
+    event = {
+        "event_id": doc_ref.id,
+        "organizer_id": session["user_id"],
+        **fields,
+        "created_at": now_iso(),
+    }
+    doc_ref.set(event)
+
+    return jsonify({"success": True, "message": "Event created successfully!", "event": event}), 201
+
+
+@app.route("/api/organizer/events/<event_id>", methods=["DELETE"])
+@api_login_required
+def api_delete_event(event_id):
+    if session["role"] != "organizer":
+        return api_error("Only organizers can delete events.", 403)
+
+    db = get_db()
+    doc_ref = db.collection(EVENTS).document(event_id)
+    snap = doc_ref.get()
+    # Same message for "missing" and "someone else's" so IDs can't be probed.
+    if not snap.exists or snap.to_dict().get("organizer_id") != session["user_id"]:
+        return api_error("Event not found.", 404)
+
+    registrations = db.collection(REGISTRATIONS).where(
+        filter=FieldFilter("event_id", "==", event_id)
+    ).limit(1).stream()
+    if any(True for _ in registrations):
+        return api_error("This event already has registrations, so it can't be deleted.", 409)
+
+    doc_ref.delete()
+    return jsonify({"success": True, "message": "Event deleted."})
 
 
 if __name__ == "__main__":
