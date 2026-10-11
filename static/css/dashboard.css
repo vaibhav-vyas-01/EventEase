@@ -723,3 +723,264 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* ==========================================================================
+   EVENT CREATION — modal, form, event cards, toast
+   (all new classes use the "evt-" prefix so they can't clash with other pages)
+   ========================================================================== */
+
+/* Event cards (extra details) */
+.event-banner-fallback {
+  height: 110px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: linear-gradient(135deg, var(--surface-2) 0%, #2A2A2A 100%);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.evt-cat-icon {
+  font-size: 34px;
+}
+
+.evt-cat-pill {
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  background-color: var(--accent-dark);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+}
+
+.event-item-card .event-meta-row {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  margin-bottom: 10px;
+}
+
+.evt-progress {
+  margin-top: 4px;
+}
+
+.evt-progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.evt-progress-track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background-color: var(--surface-2);
+  overflow: hidden;
+}
+
+.evt-progress-fill {
+  height: 100%;
+  background-color: var(--accent);
+  border-radius: var(--radius-pill);
+}
+
+.evt-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.evt-btn-danger {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-pill);
+  color: var(--danger);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 16px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.evt-btn-danger:hover {
+  background-color: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+/* Modal */
+.evt-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background-color: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
+  overflow-y: auto;
+}
+
+.evt-modal-overlay[hidden] {
+  display: none;
+}
+
+.evt-modal-card {
+  width: 100%;
+  max-width: 600px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  background-color: var(--surface-1);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 28px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.evt-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.evt-modal-title {
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+}
+
+.evt-modal-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.evt-modal-close {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-pill);
+  background-color: var(--surface-2);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.evt-modal-close:hover {
+  color: var(--text-main);
+  border-color: var(--accent);
+}
+
+/* Form */
+.evt-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.evt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.evt-field.full {
+  grid-column: 1 / -1;
+}
+
+.evt-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.evt-input {
+  width: 100%;
+  padding: 12px 14px;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: var(--transition);
+  color-scheme: dark; /* dark date / time pickers */
+}
+
+.evt-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dark);
+}
+
+textarea.evt-input {
+  resize: vertical;
+  min-height: 84px;
+}
+
+.evt-form-error {
+  min-height: 20px;
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.evt-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* Toast */
+.evt-toast-container {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.evt-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  background-color: var(--surface-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  color: var(--text-main);
+  font-size: 13.5px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.evt-toast.error {
+  border-color: var(--danger);
+}
+
+@media (max-width: 600px) {
+  .evt-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .evt-modal-card {
+    padding: 22px 18px;
+  }
+}
