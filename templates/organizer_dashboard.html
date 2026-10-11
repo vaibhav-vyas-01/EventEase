@@ -74,7 +74,7 @@
         <button type="button" class="mobile-toggle-btn" id="mobileMenuBtn">☰</button>
         <div class="topbar-search">
           <span class="search-icon">🔍</span>
-          <input type="text" id="searchInput" placeholder="Search events, registrations, or dates...">
+          <input type="text" id="searchInput" placeholder="Search your events by title, venue, category or date...">
         </div>
         <div class="topbar-actions">
           <span class="role-pill">Organizer Gate</span>
@@ -96,10 +96,9 @@
               </p>
             </div>
             <div class="hero-actions">
-              <!-- Create Event Button: Visible but disabled next step button -->
-              <button type="button" class="btn-accent" disabled title="Event creation engine coming in next release">
+              <button type="button" class="btn-accent js-open-event-modal">
                 <span>➕</span>
-                <span>Create Event (Next step)</span>
+                <span>Create Event</span>
               </button>
             </div>
           </div>
@@ -140,7 +139,7 @@
               </div>
             </div>
             <div id="eventsListContainer" class="events-grid">
-              <!-- Dynamically populated or empty state -->
+              <!-- Filled by JavaScript -->
             </div>
           </div>
         </div>
@@ -153,9 +152,9 @@
                 <h2 class="section-title">Organized Events</h2>
                 <p class="section-sub">All campus events hosted by your committee</p>
               </div>
-              <button type="button" class="btn-accent" disabled>
+              <button type="button" class="btn-accent js-open-event-modal">
                 <span>➕</span>
-                <span>Create Event (Next step)</span>
+                <span>Create Event</span>
               </button>
             </div>
             <div id="fullEventsListContainer" class="events-grid"></div>
@@ -168,7 +167,7 @@
             <div class="section-header">
               <div>
                 <h2 class="section-title">Organization Profile</h2>
-                <p class="section-sub">Verified credentials from organizers.csv</p>
+                <p class="section-sub">Details of your organizer account</p>
               </div>
             </div>
 
@@ -214,36 +213,326 @@
 
   </div>
 
+  <!-- CREATE EVENT MODAL -->
+  <div class="evt-modal-overlay" id="eventModal" hidden role="dialog" aria-modal="true" aria-labelledby="eventModalTitle">
+    <div class="evt-modal-card">
+      <div class="evt-modal-head">
+        <div>
+          <h2 class="evt-modal-title" id="eventModalTitle">Create New Event</h2>
+          <p class="evt-modal-sub">Publish an official event on the FestGate registry</p>
+        </div>
+        <button type="button" class="evt-modal-close" id="eventModalClose" aria-label="Close">✕</button>
+      </div>
+
+      <form id="eventForm">
+        <div class="evt-form-grid">
+          <div class="evt-field full">
+            <label class="evt-label" for="evTitle">Event title</label>
+            <input class="evt-input" id="evTitle" type="text" maxlength="100" required
+              placeholder="e.g. AI & Robotics Hackathon 2026">
+          </div>
+
+          <div class="evt-field">
+            <label class="evt-label" for="evCategory">Category</label>
+            <select class="evt-input" id="evCategory">
+              <option value="TECH">Tech</option>
+              <option value="DESIGN">Design</option>
+              <option value="CULTURAL">Cultural</option>
+              <option value="GAMING">Gaming</option>
+              <option value="WORKSHOP">Workshop</option>
+            </select>
+          </div>
+
+          <div class="evt-field">
+            <label class="evt-label" for="evCapacity">Capacity</label>
+            <input class="evt-input" id="evCapacity" type="number" min="1" max="100000" required>
+          </div>
+
+          <div class="evt-field full">
+            <label class="evt-label" for="evDate">Date</label>
+            <input class="evt-input" id="evDate" type="date" required>
+          </div>
+
+          <div class="evt-field">
+            <label class="evt-label" for="evStart">Start time</label>
+            <input class="evt-input" id="evStart" type="time" required>
+          </div>
+
+          <div class="evt-field">
+            <label class="evt-label" for="evEnd">End time</label>
+            <input class="evt-input" id="evEnd" type="time" required>
+          </div>
+
+          <div class="evt-field full">
+            <label class="evt-label" for="evVenue">Venue</label>
+            <input class="evt-input" id="evVenue" type="text" maxlength="120" required
+              placeholder="e.g. Main Auditorium">
+          </div>
+
+          <div class="evt-field full">
+            <label class="evt-label" for="evDescription">Description (optional)</label>
+            <textarea class="evt-input" id="evDescription" maxlength="1000"
+              placeholder="Schedule, highlights, who should attend..."></textarea>
+          </div>
+        </div>
+
+        <div class="evt-form-error" id="eventFormError" role="alert"></div>
+
+        <div class="evt-modal-actions">
+          <button type="button" class="btn-secondary" id="eventCancelBtn">Cancel</button>
+          <button type="submit" class="btn-accent" id="eventSubmitBtn">Publish Event</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="evt-toast-container" id="toastContainer"></div>
+
   <script>
-    // Tab switching & sidebar handling
-    const sidebar = document.getElementById('sidebar');
-    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-    if (mobileMenuBtn) {
-      mobileMenuBtn.addEventListener('click', () => {
-        sidebar.classList.toggle('open');
-      });
+    const $ = (id) => document.getElementById(id);
+
+    /* ==========================================================================
+       HELPERS
+       ========================================================================== */
+
+    const CATEGORY_ICONS = { TECH: '💻', DESIGN: '🎨', CULTURAL: '🎭', GAMING: '🎮', WORKSHOP: '🛠️' };
+    const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+    // Event titles etc. are typed by users, so everything is escaped before it goes into innerHTML.
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
+
+    function formatDate(iso) {
+      const [y, m, d] = String(iso || '').split('-').map(Number);
+      if (!y || !m || !d) return 'TBA';
+      return new Date(y, m - 1, d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
     }
 
+    function formatTime(hhmm) {
+      const [h, m] = String(hhmm || '').split(':').map(Number);
+      if (Number.isNaN(h) || Number.isNaN(m)) return '';
+      const d = new Date();
+      d.setHours(h, m, 0, 0);
+      return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    }
+
+    function todayIso() {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    function showToast(message, type = 'success') {
+      const toast = document.createElement('div');
+      toast.className = `evt-toast ${type === 'error' ? 'error' : ''}`;
+      toast.textContent = `${type === 'error' ? '⚠️' : '✓'} ${message}`;
+      $('toastContainer').appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+
+    /* ==========================================================================
+       SIDEBAR, TABS, LOGOUT
+       ========================================================================== */
+
+    const sidebar = $('sidebar');
+    $('mobileMenuBtn').addEventListener('click', () => sidebar.classList.toggle('open'));
+
     const navItems = document.querySelectorAll('.nav-item');
-    navItems.forEach(item => {
+    navItems.forEach((item) => {
       item.addEventListener('click', () => {
-        navItems.forEach(i => i.classList.remove('active'));
+        navItems.forEach((i) => i.classList.remove('active'));
         item.classList.add('active');
-        const tabId = item.getAttribute('data-tab');
-        document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
-        const target = document.getElementById('pane-' + tabId);
+        document.querySelectorAll('.tab-pane').forEach((p) => { p.style.display = 'none'; });
+        const target = $('pane-' + item.dataset.tab);
         if (target) target.style.display = 'block';
         if (window.innerWidth <= 992) sidebar.classList.remove('open');
       });
     });
 
-    // Logout
-    document.getElementById('logoutBtn').addEventListener('click', async () => {
+    $('logoutBtn').addEventListener('click', async () => {
       await fetch('/api/logout', { method: 'POST' });
       window.location.href = '/';
     });
 
-    // Load real organizer data from API
+    /* ==========================================================================
+       EVENTS LIST
+       ========================================================================== */
+
+    let allEvents = [];
+
+    function eventCardHTML(ev) {
+      const registered = ev.registered_count || 0;
+      const capacity = ev.capacity || 0;
+      const percent = capacity ? Math.min(100, Math.round((registered / capacity) * 100)) : 0;
+      const time = [formatTime(ev.start_time), formatTime(ev.end_time)].filter(Boolean).join(' – ');
+
+      return `
+        <div class="event-item-card">
+          <div class="event-banner-fallback">
+            <span class="evt-cat-icon">${CATEGORY_ICONS[ev.category] || '⚡'}</span>
+            <span class="evt-cat-pill">${esc(ev.category || 'EVENT')}</span>
+          </div>
+          <div class="event-content-body">
+            <h3 class="event-title">${esc(ev.title)}</h3>
+            <div class="event-meta-row">
+              <span>📅 ${esc(formatDate(ev.date))}</span>
+              ${time ? `<span>🕒 ${esc(time)}</span>` : ''}
+            </div>
+            <div class="event-meta-row">
+              <span>📍 ${esc(ev.venue || 'Campus venue')}</span>
+            </div>
+            <p class="event-desc">${esc(ev.description || 'No description provided.')}</p>
+            <div class="evt-progress">
+              <div class="evt-progress-label">
+                <span>${registered} / ${capacity} registered</span>
+                <span>${percent}%</span>
+              </div>
+              <div class="evt-progress-track"><div class="evt-progress-fill" style="width: ${percent}%"></div></div>
+            </div>
+            <div class="evt-card-actions">
+              <button type="button" class="evt-btn-danger js-delete-event" data-id="${esc(ev.event_id)}">Delete</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function emptyStateHTML(isSearching) {
+      const icon = isSearching ? '🔍' : '🎪';
+      const title = isSearching ? 'No events match your search' : 'No events published yet';
+      const text = isSearching
+        ? 'Try a different title, venue, category or date.'
+        : 'Click “Create Event” to schedule your first event.';
+      return `
+        <div class="empty-state" style="grid-column: 1 / -1;">
+          <div class="empty-icon">${icon}</div>
+          <h3 class="empty-title">${title}</h3>
+          <p class="empty-sub">${text}</p>
+        </div>`;
+    }
+
+    function renderEvents() {
+      const query = $('searchInput').value.trim().toLowerCase();
+      const visible = query
+        ? allEvents.filter((ev) =>
+            [ev.title, ev.venue, ev.category, ev.date, ev.description].join(' ').toLowerCase().includes(query))
+        : allEvents;
+
+      const html = visible.length ? visible.map(eventCardHTML).join('') : emptyStateHTML(Boolean(query));
+      $('eventsListContainer').innerHTML = html;
+      $('fullEventsListContainer').innerHTML = html;
+    }
+
+    $('searchInput').addEventListener('input', renderEvents);
+
+    async function deleteEvent(eventId) {
+      if (!confirm('Delete this event? This cannot be undone.')) return;
+      try {
+        const res = await fetch(`/api/organizer/events/${encodeURIComponent(eventId)}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) { window.location.href = '/'; return; }
+        if (!res.ok) {
+          showToast(data.message || 'Could not delete the event.', 'error');
+          return;
+        }
+        showToast(data.message || 'Event deleted.');
+        await loadOrganizerData();
+      } catch (err) {
+        console.error('Delete event error:', err);
+        showToast('Network error. Please try again.', 'error');
+      }
+    }
+
+    ['eventsListContainer', 'fullEventsListContainer'].forEach((id) => {
+      $(id).addEventListener('click', (e) => {
+        const button = e.target.closest('.js-delete-event');
+        if (button) deleteEvent(button.dataset.id);
+      });
+    });
+
+    /* ==========================================================================
+       CREATE EVENT MODAL
+       ========================================================================== */
+
+    const eventModal = $('eventModal');
+    const eventForm = $('eventForm');
+
+    function setFormError(message) {
+      $('eventFormError').textContent = message;
+    }
+
+    function openEventModal() {
+      eventForm.reset();
+      $('evCategory').value = 'TECH';
+      $('evCapacity').value = 100;
+      $('evStart').value = '10:00';
+      $('evEnd').value = '16:00';
+      $('evDate').min = todayIso();
+      setFormError('');
+      eventModal.hidden = false;
+      document.body.style.overflow = 'hidden';
+      $('evTitle').focus();
+    }
+
+    function closeEventModal() {
+      eventModal.hidden = true;
+      document.body.style.overflow = '';
+    }
+
+    document.querySelectorAll('.js-open-event-modal').forEach((btn) => btn.addEventListener('click', openEventModal));
+    $('eventModalClose').addEventListener('click', closeEventModal);
+    $('eventCancelBtn').addEventListener('click', closeEventModal);
+    eventModal.addEventListener('click', (e) => { if (e.target === eventModal) closeEventModal(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !eventModal.hidden) closeEventModal(); });
+
+    eventForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setFormError('');
+
+      const submitBtn = $('eventSubmitBtn');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Publishing…';
+
+      try {
+        const res = await fetch('/api/organizer/events', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: $('evTitle').value,
+            category: $('evCategory').value,
+            capacity: Number($('evCapacity').value),
+            date: $('evDate').value,
+            start_time: $('evStart').value,
+            end_time: $('evEnd').value,
+            venue: $('evVenue').value,
+            description: $('evDescription').value,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (res.status === 401) { window.location.href = '/'; return; }
+        if (!res.ok) {
+          setFormError(data.message || 'Could not create the event. Please try again.');
+          return;
+        }
+
+        closeEventModal();
+        showToast(data.message || 'Event created!');
+        await loadOrganizerData();
+      } catch (err) {
+        console.error('Create event error:', err);
+        setFormError('Network error. Please check your connection and try again.');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Publish Event';
+      }
+    });
+
+    /* ==========================================================================
+       LOAD ORGANIZER DATA
+       ========================================================================== */
+
     async function loadOrganizerData() {
       try {
         const res = await fetch('/api/organizer/me');
@@ -253,73 +542,34 @@
         }
         const data = await res.json();
 
-        // Greeting & Header
+        // Greeting & sidebar
         const name = data.full_name || 'Organizer';
         const orgName = data.organization_name || 'Campus';
-        document.getElementById('heroOrganizerName').textContent = name;
-        document.getElementById('sidebarName').textContent = name;
-        document.getElementById('sidebarOrg').textContent = orgName;
-        document.getElementById('heroOrgName').textContent = orgName;
+        $('heroOrganizerName').textContent = name;
+        $('sidebarName').textContent = name;
+        $('sidebarOrg').textContent = orgName;
+        $('heroOrgName').textContent = orgName;
+        $('sidebarAvatar').textContent =
+          name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase() || 'OR';
 
-        const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'OR';
-        document.getElementById('sidebarAvatar').textContent = initials;
+        // Stats
+        $('statTotalRegistrations').textContent = data.stats.total_registrations || '0';
+        $('statCheckedIn').textContent = data.stats.checked_in || '0';
+        $('statCapacityUsed').textContent = data.stats.capacity_used || '0%';
 
-        // Stats from CSV
-        document.getElementById('statTotalRegistrations').textContent = data.stats.total_registrations || '0';
-        document.getElementById('statCheckedIn').textContent = data.stats.checked_in || '0';
-        document.getElementById('statCapacityUsed').textContent = data.stats.capacity_used || '0%';
+        // Profile tab
+        $('profileOrgId').textContent = data.organizer_id || '--';
+        $('profileFullName').textContent = data.full_name || '--';
+        $('profileEmail').textContent = data.email || '--';
+        $('profileOrgName').textContent = data.organization_name || '--';
+        $('profileCommittee').textContent = data.committee_name || '--';
+        $('profileDesignation').textContent = data.designation || 'Not specified';
+        $('profilePhone').textContent = data.phone || '--';
+        $('profileProvider').textContent = data.auth_provider || 'Password';
 
-        // Profile tab fields
-        document.getElementById('profileOrgId').textContent = data.organizer_id || '--';
-        document.getElementById('profileFullName').textContent = data.full_name || '--';
-        document.getElementById('profileEmail').textContent = data.email || '--';
-        document.getElementById('profileOrgName').textContent = data.organization_name || '--';
-        document.getElementById('profileCommittee').textContent = data.committee_name || '--';
-        document.getElementById('profileDesignation').textContent = data.designation || 'Not specified';
-        document.getElementById('profilePhone').textContent = data.phone || '--';
-        document.getElementById('profileProvider').textContent = data.auth_provider || 'Password';
-
-        // Render Events or Empty State
-        const eventsContainer = document.getElementById('eventsListContainer');
-        const fullEventsContainer = document.getElementById('fullEventsListContainer');
-        const events = data.events || [];
-
-        function renderEvents(container) {
-          container.innerHTML = '';
-          if (events.length === 0) {
-            container.innerHTML = `
-              <div class="empty-state" style="grid-column: 1 / -1;">
-                <div class="empty-icon">🎪</div>
-                <h3 class="empty-title">No events published yet</h3>
-                <p class="empty-sub">You have not scheduled any events under your committee. Event creation will be activated in the next step.</p>
-              </div>
-            `;
-          } else {
-            events.forEach(ev => {
-              const card = document.createElement('div');
-              card.className = 'event-item-card';
-              card.innerHTML = `
-                <div style="height: 120px; background: linear-gradient(135deg, #1C1C1C 0%, #2A2A2A 100%); display: flex; align-items: center; justify-content: center; font-size: 32px;">
-                  ⚡
-                </div>
-                <div class="event-content-body">
-                  <h3 class="event-title">${ev.title || 'Campus Event'}</h3>
-                  <div class="event-meta-row">
-                    <span>📅 ${ev.date || 'TBA'}</span>
-                    <span>📍 ${ev.venue || 'Campus Venue'}</span>
-                  </div>
-                  <p class="event-desc">${ev.description || 'No description provided.'}</p>
-                  <div style="font-size: 12px; font-weight: 700; color: var(--accent);">Capacity: ${ev.capacity || 'Open'}</div>
-                </div>
-              `;
-              container.appendChild(card);
-            });
-          }
-        }
-
-        renderEvents(eventsContainer);
-        renderEvents(fullEventsContainer);
-
+        // Events
+        allEvents = data.events || [];
+        renderEvents();
       } catch (err) {
         console.error('Error fetching organizer data:', err);
       }
