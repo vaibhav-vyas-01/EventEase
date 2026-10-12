@@ -1,11 +1,13 @@
 """FestGate backend — auth, profiles and dashboards (Firebase Firestore storage)."""
 import json
 import os
+import secrets
 from collections import Counter
 from datetime import datetime, timezone
 from functools import wraps
 
 import firebase_admin
+import segno
 from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials, firestore
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
@@ -32,6 +34,10 @@ MAX_VENUE_LENGTH = 120
 MAX_DESCRIPTION_LENGTH = 1000
 MAX_CAPACITY = 100000
 
+# Gate passes
+PASS_CODE_TRIES = 5  # random 6-digit codes tried before giving up (collisions are very rare)
+MAX_GATE_LENGTH = 40
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = SECRET_KEY
 
@@ -40,6 +46,7 @@ EVENTS = "events"
 REGISTRATIONS = "registrations"
 EMAIL_INDEX = "emails"  # emails/{email} -> {role, user_id}; guarantees unique emails
 COUNTERS = "counters"  # counters/{role} -> {value}; used for P001, P002, ... IDs
+PASSES = "passes"  # passes/{6-digit code} -> {reg_id, event_id}; guarantees unique codes
 
 # Everything that differs between the two roles lives here, so the
 # rest of the code never needs `if role == 'participant' ... else ...`.
@@ -498,6 +505,202 @@ def api_complete_profile():
     return handler(session["user_id"], data, phone)
 
 
+# ==================== GATE PASSES (registration + one-time check-in) ====================
+
+def new_pass_code():
+    """Random 6-digit code (100000-999999). Unguessable order, no leading zeros."""
+    return str(100000 + secrets.randbelow(900000))
+
+
+def make_qr_svg(code):
+    """Inline SVG of a standard QR (micro=False: phones and scanners can't read Micro QR)."""
+    return segno.make(code, error="m", micro=False).svg_inline(
+        scale=8, border=4, dark="#000000", light="#ffffff", omitsize=True  # omitsize -> viewBox, so CSS can resize it
+    )
+
+
+def build_pass(reg, event):
+    """What the participant sees: the registration + its event details + the QR."""
+    event = event or {}
+    return {
+        **pick(reg, ("reg_id", "event_id", "ticket_code", "checked_in", "checked_in_at",
+                     "registered_at", "name", "roll_number")),
+        "event_title": event.get("title", "Event"),
+        "event_date": event.get("date", ""),
+        "event_start_time": event.get("start_time", ""),
+        "event_end_time": event.get("end_time", ""),
+        "event_venue": event.get("venue", ""),
+        "event_category": event.get("category", ""),
+        "qr_svg": make_qr_svg(reg["ticket_code"]),
+    }
+
+
+@firestore.transactional
+def _register_in_txn(txn, db, event_id, user, codes):
+    """All-or-nothing: check seats, claim a unique code, save the registration, count it."""
+    participant_id = user["participant_id"]
+    event_ref = db.collection(EVENTS).document(event_id)
+    reg_id = f"{event_id}_{participant_id}"  # one registration per participant per event
+    reg_ref = db.collection(REGISTRATIONS).document(reg_id)
+
+    # Firestore transactions: all reads first, then writes.
+    event_snap = event_ref.get(transaction=txn)
+    reg_snap = reg_ref.get(transaction=txn)
+    if not event_snap.exists:
+        return "not_found", None, None
+    event = event_snap.to_dict()
+    if reg_snap.exists:
+        return "exists", reg_snap.to_dict(), event
+
+    registered = event.get("registered_count", 0)
+    if registered >= to_int(event.get("capacity")):
+        return "full", None, event
+
+    code, pass_ref = None, None
+    for candidate in codes:
+        candidate_ref = db.collection(PASSES).document(candidate)
+        if not candidate_ref.get(transaction=txn).exists:
+            code, pass_ref = candidate, candidate_ref
+            break
+    if not code:
+        return "no_code", None, event
+
+    reg = {
+        "reg_id": reg_id,
+        "event_id": event_id,
+        "participant_id": participant_id,
+        "name": user.get("full_name", ""),
+        "email": user.get("email", ""),
+        "roll_number": user.get("roll_number", ""),
+        "ticket_code": code,
+        "checked_in": "0",
+        "registered_at": now_iso(),
+    }
+    txn.set(reg_ref, reg)
+    txn.set(pass_ref, {"reg_id": reg_id, "event_id": event_id})
+    txn.update(event_ref, {"registered_count": registered + 1})
+    return "created", reg, event
+
+
+@firestore.transactional
+def _check_in_in_txn(txn, db, code, organizer_id, gate, stamp):
+    """Admit a pass exactly once. Two scans at the same moment: one wins, the other sees DUPLICATE."""
+    pass_snap = db.collection(PASSES).document(code).get(transaction=txn)
+    if not pass_snap.exists:
+        return "invalid", None, None
+    pass_data = pass_snap.to_dict()
+
+    reg_ref = db.collection(REGISTRATIONS).document(pass_data["reg_id"])
+    event_ref = db.collection(EVENTS).document(pass_data["event_id"])
+    reg_snap = reg_ref.get(transaction=txn)
+    event_snap = event_ref.get(transaction=txn)
+    if not (reg_snap.exists and event_snap.exists):
+        return "invalid", None, None
+
+    reg, event = reg_snap.to_dict(), event_snap.to_dict()
+    if event.get("organizer_id") != organizer_id:  # organizers can only admit their own events
+        return "invalid", None, None
+    if is_checked_in(reg):
+        return "duplicate", reg, event
+
+    changes = {"checked_in": "1", "checked_in_at": stamp, "checked_in_by": gate}
+    txn.update(reg_ref, changes)
+    txn.update(event_ref, {"checked_in_count": event.get("checked_in_count", 0) + 1})
+    reg.update(changes)
+    return "success", reg, event
+
+
+@app.route("/api/participant/register", methods=["POST"])
+@api_login_required
+def api_register_for_event():
+    if session["role"] != "participant":
+        return api_error("Only participants can register for events.", 403)
+
+    event_id = clean(request.get_json(silent=True) or {}, "event_id")
+    if not event_id:
+        return api_error("Please choose an event.", field="event_id")
+    if "/" in event_id:
+        return api_error("Event not found.", 404)
+
+    user = find_user_by_id(session["user_id"], "participant")
+    if not user:
+        return api_error("Account not found. Please log in again.", 404)
+    if not is_profile_complete(user, "participant"):
+        return api_error("Please complete your profile before registering.", 403)
+
+    db = get_db()
+    codes = [new_pass_code() for _ in range(PASS_CODE_TRIES)]
+    status, reg, event = _register_in_txn(db.transaction(), db, event_id, user, codes)
+
+    if status == "not_found":
+        return api_error("Event not found.", 404)
+    if status == "full":
+        return api_error("Sorry, this event is full.", 409)
+    if status == "no_code":
+        return api_error("Could not generate your pass. Please try again.", 503)
+    if status == "exists":
+        return jsonify({
+            "success": False,
+            "message": "You are already registered for this event.",
+            "pass": build_pass(reg, event),
+        }), 409
+
+    return jsonify({
+        "success": True,
+        "message": "You're registered! Your gate pass is ready.",
+        "pass": build_pass(reg, event),
+    }), 201
+
+
+@app.route("/api/organizer/checkin", methods=["POST"])
+@api_login_required
+def api_check_in():
+    """Gate check-in. SUCCESS (200) / DUPLICATE (409) / INVALID (404 or 400)."""
+    if session["role"] != "organizer":
+        return api_error("Only organizers can check people in.", 403)
+
+    data = request.get_json(silent=True) or {}
+    code = "".join(ch for ch in clean(data, "code") if ch.isdigit())  # accepts "482 915"
+    gate = clean(data, "gate")[:MAX_GATE_LENGTH] or "Gate 1"
+
+    if len(code) != 6:
+        return jsonify({"success": False, "reason": "INVALID",
+                        "message": "Please enter the 6-digit pass code."}), 400
+
+    db = get_db()
+    status, reg, event = _check_in_in_txn(
+        db.transaction(), db, code, session["user_id"], gate, now_iso()
+    )
+
+    if status == "invalid":
+        # Same answer for "no such code" and "someone else's event", so codes can't be probed.
+        return jsonify({"success": False, "reason": "INVALID",
+                        "message": "This pass code was not found for your events."}), 404
+
+    attendee = {
+        "name": reg.get("name", ""),
+        "roll_number": reg.get("roll_number", ""),
+        "email": reg.get("email", ""),
+        "event_title": event.get("title", ""),
+        "checked_in_at": reg.get("checked_in_at", ""),
+        "checked_in_by": reg.get("checked_in_by", ""),
+    }
+    if status == "duplicate":
+        return jsonify({
+            "success": False,
+            "reason": "DUPLICATE",
+            "message": "Already checked in. Re-entry denied.",
+            "attendee": attendee,
+        }), 409
+
+    return jsonify({
+        "success": True,
+        "reason": "SUCCESS",
+        "message": f"Access granted! Welcome {attendee['name']}.",
+        "attendee": attendee,
+    })
+
+
 # ==================== DASHBOARD APIS ====================
 
 def is_checked_in(registration):
@@ -510,13 +713,26 @@ def api_participant_me():
     if session["role"] != "participant":
         return jsonify({"error": "Unauthorized"}), 403
 
-    user = find_user_by_id(session["user_id"], "participant")
+    user_id = session["user_id"]
+    user = find_user_by_id(user_id, "participant")
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    email = user.get("email", "").strip().lower()
-    my_regs = query_docs(REGISTRATIONS, "email", "==", email)
+    my_regs = query_docs(REGISTRATIONS, "participant_id", "==", user_id)
     all_events = [doc.to_dict() for doc in get_db().collection(EVENTS).stream()]
+    events_by_id = {e.get("event_id"): e for e in all_events}
+    my_reg_by_event = {r.get("event_id"): r for r in my_regs}
+
+    # What the event cards need: seats taken + "have I already registered?"
+    for event in all_events:
+        event.pop("organizer_id", None)
+        event["registered_count"] = event.get("registered_count", 0)
+        my_reg = my_reg_by_event.get(event.get("event_id"))
+        event["my_reg_id"] = my_reg["reg_id"] if my_reg else None
+    all_events.sort(key=lambda e: (e.get("date", ""), e.get("start_time", "")))
+
+    passes = [build_pass(r, events_by_id.get(r.get("event_id"))) for r in my_regs]
+    passes.sort(key=lambda p: (p["event_date"], p["event_start_time"]))
 
     return jsonify({
         **pick(user, ROLES["participant"]["public_fields"]),
@@ -526,7 +742,7 @@ def api_participant_me():
             "checked_in": sum(is_checked_in(r) for r in my_regs),
         },
         "events": all_events,
-        "passes_list": my_regs,
+        "passes_list": passes,
     })
 
 
