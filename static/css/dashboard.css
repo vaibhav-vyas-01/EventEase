@@ -984,3 +984,362 @@ textarea.evt-input {
     padding: 22px 18px;
   }
 }
+
+
+/* ==========================================================================
+   GATE PASSES — participant event actions, pass ticket, organizer gate check-in
+   ========================================================================== */
+
+/* Participant: event card footer + seats */
+.evt-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.evt-seats {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.evt-seats.low {
+  color: #FFB020;
+}
+
+.evt-seats.full {
+  color: var(--danger);
+}
+
+.btn-accent.small,
+.btn-secondary.small {
+  padding: 8px 16px;
+  font-size: 12.5px;
+}
+
+.evt-subtitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+/* Status chips */
+.evt-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  background-color: var(--surface-2);
+  white-space: nowrap;
+}
+
+.evt-chip.ok {
+  color: var(--accent);
+  border-color: var(--accent);
+  background-color: var(--accent-dark);
+}
+
+.evt-chip.dup {
+  color: var(--danger);
+  border-color: var(--danger);
+  background-color: var(--danger-bg);
+}
+
+.evt-chip.bad {
+  color: #FFB020;
+  border-color: #FFB020;
+  background-color: rgba(255, 176, 32, 0.12);
+}
+
+.evt-pass-code-small {
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Pass ticket (modal) */
+.evt-modal-card.evt-pass-card {
+  max-width: 420px;
+  padding: 0;
+}
+
+.evt-pass-header {
+  padding: 20px 24px;
+  background: linear-gradient(135deg, var(--surface-2) 0%, #2A2A2A 100%);
+  border-bottom: 1px dashed var(--border-color);
+}
+
+.evt-pass-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.evt-pass-brand {
+  font-family: var(--font-logo);
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.evt-pass-brand span {
+  color: var(--accent);
+}
+
+.evt-pass-event {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  margin: 12px 0 8px;
+}
+
+.evt-pass-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.evt-pass-body {
+  padding: 24px;
+  text-align: center;
+}
+
+.evt-pass-qr {
+  display: inline-block;
+  background: #fff;
+  padding: 10px;
+  border-radius: 14px;
+  line-height: 0;
+}
+
+.evt-pass-qr svg {
+  width: 200px;
+  height: 200px;
+  display: block;
+}
+
+.evt-pass-code-label {
+  margin-top: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+.evt-pass-code {
+  margin-top: 4px;
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: 8px;
+  padding-left: 8px; /* balances the trailing letter-spacing so the digits look centered */
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.evt-pass-attendee {
+  margin-top: 14px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.evt-pass-attendee small {
+  display: block;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.evt-pass-status {
+  margin-top: 12px;
+}
+
+.evt-pass-note {
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.evt-pass-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 24px 24px;
+}
+
+/* Organizer: gate check-in */
+.evt-gate-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 28px;
+}
+
+.evt-gate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.evt-gate-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.evt-input.evt-code-input {
+  max-width: 300px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: 8px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.evt-video-wrap {
+  position: relative;
+  margin-top: 18px;
+  max-width: 420px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  background: #000;
+}
+
+.evt-video-wrap video {
+  display: block;
+  width: 100%;
+}
+
+.evt-scan-hint {
+  min-height: 18px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.evt-result {
+  margin-top: 18px;
+  padding: 18px 20px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+
+.evt-result.success {
+  background-color: var(--accent-dark);
+  border-color: var(--accent);
+}
+
+.evt-result.duplicate {
+  background-color: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+.evt-result.invalid {
+  background-color: rgba(255, 176, 32, 0.12);
+  border-color: #FFB020;
+}
+
+.evt-result-title {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.evt-result-detail {
+  margin-top: 8px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+
+.evt-result-detail strong {
+  color: var(--text-main);
+}
+
+.evt-scan-log {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evt-scan-log li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.evt-scan-log .evt-scan-empty {
+  color: var(--text-dim);
+  justify-content: center;
+}
+
+@media (max-width: 900px) {
+  .evt-gate-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Print: only the pass ticket, on white paper */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  .evt-modal-overlay {
+    position: static !important;
+    display: block !important;
+    padding: 0 !important;
+    background: none !important;
+    backdrop-filter: none !important;
+    overflow: visible !important;
+  }
+
+  .evt-print-area,
+  .evt-print-area * {
+    visibility: visible !important;
+    color: #000 !important;
+    border-color: #000 !important;
+  }
+
+  .evt-print-area {
+    position: absolute !important;
+    left: 50%;
+    top: 24px;
+    transform: translateX(-50%);
+    width: 420px;
+    max-width: 100%;
+    max-height: none !important;
+    overflow: visible !important;
+    background: #fff !important;
+    border: 2px solid #000 !important;
+    box-shadow: none !important;
+  }
+
+  .evt-print-area .evt-pass-header {
+    background: #fff !important;
+  }
+
+  .evt-print-area .evt-pass-actions,
+  .evt-print-area .evt-modal-close {
+    display: none !important;
+  }
+}
