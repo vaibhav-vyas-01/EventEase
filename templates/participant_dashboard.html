@@ -80,7 +80,7 @@
         <button type="button" class="mobile-toggle-btn" id="mobileMenuBtn">☰</button>
         <div class="topbar-search">
           <span class="search-icon">🔍</span>
-          <input type="text" id="searchInput" placeholder="Search events by title, venue, or category...">
+          <input type="text" id="searchInput" placeholder="Search events by title, venue, category or date...">
         </div>
         <div class="topbar-actions">
           <span class="role-pill">Attendee Gate</span>
@@ -135,12 +135,12 @@
             </div>
           </div>
 
-          <!-- Section: Featured Campus Events (from events.csv) -->
+          <!-- Section: Featured Campus Events -->
           <div class="card-surface">
             <div class="section-header">
               <div>
                 <h2 class="section-title">Campus Events</h2>
-                <p class="section-sub">Browse events happening across campus</p>
+                <p class="section-sub">Register for an event to get your gate pass</p>
               </div>
             </div>
             <div id="eventsGridContainer" class="events-grid">
@@ -168,7 +168,7 @@
             <div class="section-header">
               <div>
                 <h2 class="section-title">My Event Passes</h2>
-                <p class="section-sub">Digital tickets and access codes</p>
+                <p class="section-sub">Your QR pass and 6-digit entry code. Each pass works only once.</p>
               </div>
             </div>
             <div id="passesContainer">
@@ -183,7 +183,7 @@
             <div class="section-header">
               <div>
                 <h2 class="section-title">Attendee Profile</h2>
-                <p class="section-sub">Verified credentials from participants.csv</p>
+                <p class="section-sub">Details of your attendee account</p>
               </div>
             </div>
 
@@ -229,44 +229,316 @@
 
   </div>
 
+  <!-- GATE PASS MODAL -->
+  <div class="evt-modal-overlay" id="passModal" hidden role="dialog" aria-modal="true" aria-labelledby="passEventTitle">
+    <div class="evt-modal-card evt-pass-card evt-print-area">
+      <div class="evt-pass-header">
+        <div class="evt-pass-top">
+          <span class="evt-pass-brand">Fest<span>Gate</span> · Gate Pass</span>
+          <button type="button" class="evt-modal-close" id="passModalClose" aria-label="Close">✕</button>
+        </div>
+        <h2 class="evt-pass-event" id="passEventTitle">Event</h2>
+        <div class="evt-pass-meta" id="passMeta"></div>
+      </div>
+
+      <div class="evt-pass-body">
+        <div class="evt-pass-qr" id="passQr"></div>
+        <div class="evt-pass-code-label">Entry code</div>
+        <div class="evt-pass-code" id="passCode">--- ---</div>
+        <div class="evt-pass-attendee" id="passAttendee"></div>
+        <div class="evt-pass-status" id="passStatus"></div>
+        <p class="evt-pass-note">Valid for one entry only. Show the QR code at the gate, or tell the 6-digit code to the gate staff.</p>
+      </div>
+
+      <div class="evt-pass-actions">
+        <button type="button" class="btn-secondary" id="passPrintBtn">🖨️ Print / Save PDF</button>
+        <button type="button" class="btn-accent" id="passDoneBtn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="evt-toast-container" id="toastContainer"></div>
+
   <script>
-    // Tab switching & sidebar handling
-    const sidebar = document.getElementById('sidebar');
-    const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-    if (mobileMenuBtn) {
-      mobileMenuBtn.addEventListener('click', () => {
-        sidebar.classList.toggle('open');
-      });
+    const $ = (id) => document.getElementById(id);
+
+    /* ==========================================================================
+       HELPERS
+       ========================================================================== */
+
+    const CATEGORY_ICONS = { TECH: '💻', DESIGN: '🎨', CULTURAL: '🎭', GAMING: '🎮', WORKSHOP: '🛠️' };
+    const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+    // Everything typed by users (event titles, venues, names...) is escaped before it goes into innerHTML.
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
+
+    function formatDate(iso) {
+      const [y, m, d] = String(iso || '').split('-').map(Number);
+      if (!y || !m || !d) return 'TBA';
+      return new Date(y, m - 1, d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
     }
 
+    function formatTime(hhmm) {
+      const [h, m] = String(hhmm || '').split(':').map(Number);
+      if (Number.isNaN(h) || Number.isNaN(m)) return '';
+      const d = new Date();
+      d.setHours(h, m, 0, 0);
+      return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    }
+
+    function formatDateTime(isoStamp) {
+      const d = new Date(isoStamp);
+      return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+    }
+
+    const timeRange = (start, end) => [formatTime(start), formatTime(end)].filter(Boolean).join(' – ');
+    const spacedCode = (code) => (String(code || '').length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : '--- ---');
+
+    function showToast(message, type = 'success') {
+      const toast = document.createElement('div');
+      toast.className = `evt-toast ${type === 'error' ? 'error' : ''}`;
+      toast.textContent = `${type === 'error' ? '⚠️' : '✓'} ${message}`;
+      $('toastContainer').appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+
+    /* ==========================================================================
+       SIDEBAR, TABS, LOGOUT
+       ========================================================================== */
+
+    const sidebar = $('sidebar');
+    $('mobileMenuBtn').addEventListener('click', () => sidebar.classList.toggle('open'));
+
     const navItems = document.querySelectorAll('.nav-item');
-    navItems.forEach(item => {
+    navItems.forEach((item) => {
       item.addEventListener('click', () => {
-        navItems.forEach(i => i.classList.remove('active'));
+        navItems.forEach((i) => i.classList.remove('active'));
         item.classList.add('active');
-        const tabId = item.getAttribute('data-tab');
-        document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
-        const target = document.getElementById('pane-' + tabId);
+        document.querySelectorAll('.tab-pane').forEach((p) => { p.style.display = 'none'; });
+        const target = $('pane-' + item.dataset.tab);
         if (target) target.style.display = 'block';
         if (window.innerWidth <= 992) sidebar.classList.remove('open');
       });
     });
 
-    const shortcutBtn = document.getElementById('browseEventsShortcutBtn');
-    if (shortcutBtn) {
-      shortcutBtn.addEventListener('click', () => {
-        const eventsTab = document.querySelector('[data-tab="tab-events"]');
-        if (eventsTab) eventsTab.click();
-      });
-    }
+    $('browseEventsShortcutBtn').addEventListener('click', () => {
+      const eventsTab = document.querySelector('[data-tab="tab-events"]');
+      if (eventsTab) eventsTab.click();
+    });
 
-    // Logout
-    document.getElementById('logoutBtn').addEventListener('click', async () => {
+    $('logoutBtn').addEventListener('click', async () => {
       await fetch('/api/logout', { method: 'POST' });
       window.location.href = '/';
     });
 
-    // Load real participant data from API
+    /* ==========================================================================
+       EVENTS (browse + register)
+       ========================================================================== */
+
+    let allEvents = [];
+    let allPasses = [];
+
+    function eventCardHTML(ev) {
+      const capacity = ev.capacity || 0;
+      const seatsLeft = Math.max(0, capacity - (ev.registered_count || 0));
+      const isFull = capacity > 0 && seatsLeft === 0;
+      const isLow = !isFull && seatsLeft <= Math.max(5, Math.ceil(capacity * 0.1));
+      const seatsText = isFull ? 'Event full' : `${seatsLeft} seat${seatsLeft === 1 ? '' : 's'} left`;
+      const time = timeRange(ev.start_time, ev.end_time);
+
+      let action;
+      if (ev.my_reg_id) {
+        action = `<button type="button" class="btn-secondary small js-view-pass" data-reg="${esc(ev.my_reg_id)}">🎟️ View My Pass</button>`;
+      } else if (isFull) {
+        action = '<button type="button" class="btn-accent small" disabled>Event Full</button>';
+      } else {
+        action = `<button type="button" class="btn-accent small js-register" data-event="${esc(ev.event_id)}">Register &amp; Get Pass</button>`;
+      }
+
+      return `
+        <div class="event-item-card">
+          <div class="event-banner-fallback">
+            <span class="evt-cat-icon">${CATEGORY_ICONS[ev.category] || '⚡'}</span>
+            <span class="evt-cat-pill">${esc(ev.category || 'EVENT')}</span>
+          </div>
+          <div class="event-content-body">
+            <h3 class="event-title">${esc(ev.title || 'Campus Event')}</h3>
+            <div class="event-meta-row">
+              <span>📅 ${esc(formatDate(ev.date))}</span>
+              ${time ? `<span>🕒 ${esc(time)}</span>` : ''}
+            </div>
+            <div class="event-meta-row">
+              <span>📍 ${esc(ev.venue || 'Campus venue')}</span>
+            </div>
+            <p class="event-desc">${esc(ev.description || 'No description provided.')}</p>
+            <div class="evt-card-footer">
+              <span class="evt-seats ${isFull ? 'full' : isLow ? 'low' : ''}">${seatsText}</span>
+              ${action}
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function emptyStateHTML(icon, title, text) {
+      return `
+        <div class="empty-state" style="grid-column: 1 / -1;">
+          <div class="empty-icon">${icon}</div>
+          <h3 class="empty-title">${title}</h3>
+          <p class="empty-sub">${text}</p>
+        </div>`;
+    }
+
+    function renderEvents() {
+      const query = $('searchInput').value.trim().toLowerCase();
+      const visible = query
+        ? allEvents.filter((ev) =>
+            [ev.title, ev.venue, ev.category, ev.date, ev.description].join(' ').toLowerCase().includes(query))
+        : allEvents;
+
+      let html;
+      if (visible.length) {
+        html = visible.map(eventCardHTML).join('');
+      } else if (query) {
+        html = emptyStateHTML('🔍', 'No events match your search', 'Try a different title, venue, category or date.');
+      } else {
+        html = emptyStateHTML('🎪', 'No events scheduled', 'Check back later for newly announced festivals and competitions.');
+      }
+      $('eventsGridContainer').innerHTML = html;
+      $('fullBrowseEventsContainer').innerHTML = html;
+    }
+
+    $('searchInput').addEventListener('input', renderEvents);
+
+    async function registerForEvent(eventId, button) {
+      const label = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Registering…';
+
+      try {
+        const res = await fetch('/api/participant/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event_id: eventId }),
+        });
+        const data = await res.json().catch(() => ({}));
+
+        if (res.status === 401) { window.location.href = '/'; return; }
+
+        // 201 = newly registered. 409 + pass = was already registered: just show the pass.
+        if ((res.status === 201 || res.status === 409) && data.pass) {
+          showToast(data.message || 'Registered!', res.status === 201 ? 'success' : 'error');
+          await loadParticipantData();
+          openPass(data.pass.reg_id);
+          return;
+        }
+        showToast(data.message || 'Could not register. Please try again.', 'error');
+      } catch (err) {
+        console.error('Register error:', err);
+        showToast('Network error. Please try again.', 'error');
+      } finally {
+        button.disabled = false;
+        button.textContent = label;
+      }
+    }
+
+    ['eventsGridContainer', 'fullBrowseEventsContainer'].forEach((id) => {
+      $(id).addEventListener('click', (e) => {
+        const registerBtn = e.target.closest('.js-register');
+        if (registerBtn) { registerForEvent(registerBtn.dataset.event, registerBtn); return; }
+        const viewBtn = e.target.closest('.js-view-pass');
+        if (viewBtn) openPass(viewBtn.dataset.reg);
+      });
+    });
+
+    /* ==========================================================================
+       MY PASSES + PASS MODAL
+       ========================================================================== */
+
+    function passCardHTML(p) {
+      const used = p.checked_in === '1';
+      const time = timeRange(p.event_start_time, p.event_end_time);
+      return `
+        <div class="event-item-card">
+          <div class="event-banner-fallback">
+            <span class="evt-cat-icon">${CATEGORY_ICONS[p.event_category] || '🎟️'}</span>
+            <span class="evt-chip ${used ? 'ok' : ''}">${used ? '✓ CHECKED IN' : 'PENDING ENTRY'}</span>
+          </div>
+          <div class="event-content-body">
+            <h3 class="event-title">${esc(p.event_title)}</h3>
+            <div class="event-meta-row">
+              <span>📅 ${esc(formatDate(p.event_date))}</span>
+              ${time ? `<span>🕒 ${esc(time)}</span>` : ''}
+            </div>
+            <div class="event-meta-row">
+              <span>📍 ${esc(p.event_venue || 'Campus venue')}</span>
+            </div>
+            <div class="evt-card-footer">
+              <span class="evt-pass-code-small">${esc(spacedCode(p.ticket_code))}</span>
+              <button type="button" class="btn-accent small js-view-pass" data-reg="${esc(p.reg_id)}">View Pass</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function renderPasses() {
+      const container = $('passesContainer');
+      if (!allPasses.length) {
+        container.innerHTML = emptyStateHTML(
+          '🎟️', 'No active passes yet',
+          'Register for an event and your QR pass and 6-digit entry code will appear here.');
+        return;
+      }
+      container.innerHTML = `<div class="events-grid">${allPasses.map(passCardHTML).join('')}</div>`;
+    }
+
+    $('passesContainer').addEventListener('click', (e) => {
+      const viewBtn = e.target.closest('.js-view-pass');
+      if (viewBtn) openPass(viewBtn.dataset.reg);
+    });
+
+    const passModal = $('passModal');
+
+    function openPass(regId) {
+      const p = allPasses.find((x) => x.reg_id === regId);
+      if (!p) return;
+
+      const used = p.checked_in === '1';
+      const time = timeRange(p.event_start_time, p.event_end_time);
+
+      $('passEventTitle').textContent = p.event_title || 'Event';
+      $('passMeta').innerHTML = `
+        <span>📅 ${esc(formatDate(p.event_date))}${time ? ` · 🕒 ${esc(time)}` : ''}</span>
+        <span>📍 ${esc(p.event_venue || 'Campus venue')}</span>`;
+      $('passQr').innerHTML = p.qr_svg || ''; // SVG generated by our own server from the 6-digit code
+      $('passCode').textContent = spacedCode(p.ticket_code);
+      $('passAttendee').innerHTML = `${esc(p.name)}<small>Roll No: ${esc(p.roll_number || '--')}</small>`;
+      $('passStatus').innerHTML = used
+        ? `<span class="evt-chip ok">✓ CHECKED IN${p.checked_in_at ? ' · ' + esc(formatDateTime(p.checked_in_at)) : ''}</span>`
+        : '<span class="evt-chip">NOT USED YET</span>';
+
+      passModal.hidden = false;
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closePass() {
+      passModal.hidden = true;
+      document.body.style.overflow = '';
+    }
+
+    $('passModalClose').addEventListener('click', closePass);
+    $('passDoneBtn').addEventListener('click', closePass);
+    $('passPrintBtn').addEventListener('click', () => window.print());
+    passModal.addEventListener('click', (e) => { if (e.target === passModal) closePass(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !passModal.hidden) closePass(); });
+
+    /* ==========================================================================
+       LOAD PARTICIPANT DATA
+       ========================================================================== */
+
     async function loadParticipantData() {
       try {
         const res = await fetch('/api/participant/me');
@@ -278,113 +550,34 @@
 
         // Greeting
         const name = data.full_name || 'Participant';
-        const college = data.college || 'Campus';
         const roll = data.roll_number || 'N/A';
-        document.getElementById('heroStudentName').textContent = name;
-        document.getElementById('sidebarName').textContent = name;
-        document.getElementById('heroCollege').textContent = college;
-        document.getElementById('heroRollNumber').textContent = roll;
-        document.getElementById('sidebarRoll').textContent = roll;
-
-        const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'ST';
-        document.getElementById('sidebarAvatar').textContent = initials;
+        $('heroStudentName').textContent = name;
+        $('sidebarName').textContent = name;
+        $('heroCollege').textContent = data.college || 'Campus';
+        $('heroRollNumber').textContent = roll;
+        $('sidebarRoll').textContent = roll;
+        $('sidebarAvatar').textContent =
+          name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase() || 'ST';
 
         // Stat cards
-        document.getElementById('statEventsRegistered').textContent = data.stats.events_registered || '0';
-        document.getElementById('statPasses').textContent = data.stats.passes || '0';
-        document.getElementById('statCheckedIn').textContent = data.stats.checked_in || '0';
+        $('statEventsRegistered').textContent = data.stats.events_registered || '0';
+        $('statPasses').textContent = data.stats.passes || '0';
+        $('statCheckedIn').textContent = data.stats.checked_in || '0';
 
-        // Profile tab fields
-        document.getElementById('profileParticipantId').textContent = data.participant_id || '--';
-        document.getElementById('profileFullName').textContent = data.full_name || '--';
-        document.getElementById('profileEmail').textContent = data.email || '--';
-        document.getElementById('profileCollege').textContent = data.college || '--';
-        document.getElementById('profileRoll').textContent = data.roll_number || '--';
-        document.getElementById('profilePhone').textContent = data.phone || '--';
-        document.getElementById('profileProvider').textContent = data.auth_provider || 'Password';
+        // Profile tab
+        $('profileParticipantId').textContent = data.participant_id || '--';
+        $('profileFullName').textContent = data.full_name || '--';
+        $('profileEmail').textContent = data.email || '--';
+        $('profileCollege').textContent = data.college || '--';
+        $('profileRoll').textContent = data.roll_number || '--';
+        $('profilePhone').textContent = data.phone || '--';
+        $('profileProvider').textContent = data.auth_provider || 'Password';
 
-        // Render Browse Events from events.csv
-        const eventsGrid = document.getElementById('eventsGridContainer');
-        const fullEventsGrid = document.getElementById('fullBrowseEventsContainer');
-        const events = data.events || [];
-
-        function renderEventCards(container) {
-          container.innerHTML = '';
-          if (events.length === 0) {
-            container.innerHTML = `
-              <div class="empty-state" style="grid-column: 1 / -1;">
-                <div class="empty-icon">🎪</div>
-                <h3 class="empty-title">No events scheduled</h3>
-                <p class="empty-sub">Check back later for newly announced festivals and competitions.</p>
-              </div>
-            `;
-          } else {
-            events.forEach(ev => {
-              const card = document.createElement('div');
-              card.className = 'event-item-card';
-              card.innerHTML = `
-                <div style="height: 120px; background: linear-gradient(135deg, #1C1C1C 0%, #2A2A2A 100%); display: flex; align-items: center; justify-content: center; font-size: 32px;">
-                  ⚡
-                </div>
-                <div class="event-content-body">
-                  <h3 class="event-title">${ev.title || 'Campus Event'}</h3>
-                  <div class="event-meta-row">
-                    <span>📅 ${ev.date || 'TBA'}</span>
-                    <span>📍 ${ev.venue || 'Campus Venue'}</span>
-                  </div>
-                  <p class="event-desc">${ev.description || 'No description provided.'}</p>
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-top: auto;">
-                    <span style="font-size: 12px; color: var(--text-dim);">Capacity: ${ev.capacity || 'Open'}</span>
-                    <span class="role-pill" style="font-size: 11px; padding: 3px 10px;">Upcoming</span>
-                  </div>
-                </div>
-              `;
-              container.appendChild(card);
-            });
-          }
-        }
-
-        renderEventCards(eventsGrid);
-        renderEventCards(fullEventsGrid);
-
-        // Render My Passes (Empty State)
-        const passesContainer = document.getElementById('passesContainer');
-        const passesList = data.passes_list || [];
-        passesContainer.innerHTML = '';
-
-        if (passesList.length === 0) {
-          passesContainer.innerHTML = `
-            <div class="empty-state">
-              <div class="empty-icon">🎟️</div>
-              <h3 class="empty-title">No active passes yet</h3>
-              <p class="empty-sub">You have not registered for any upcoming events yet. Once you claim a pass, your QR pass and entry ticket will appear here.</p>
-            </div>
-          `;
-        } else {
-          const passGrid = document.createElement('div');
-          passGrid.className = 'events-grid';
-          passesList.forEach(p => {
-            const card = document.createElement('div');
-            card.className = 'event-item-card';
-            card.innerHTML = `
-              <div class="event-content-body">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                  <span class="role-pill" style="font-size: 11px;">Pass Code: ${p.ticket_code || '---'}</span>
-                  <span style="font-size: 12px; color: ${p.checked_in === '1' ? 'var(--accent)' : 'var(--text-muted)'};">
-                    ${p.checked_in === '1' ? '✓ Checked In' : 'Pending Entry'}
-                  </span>
-                </div>
-                <h3 class="event-title">Event Registration</h3>
-                <div class="event-meta-row">
-                  <span>Reg ID: ${p.reg_id || '--'}</span>
-                </div>
-              </div>
-            `;
-            passGrid.appendChild(card);
-          });
-          passesContainer.appendChild(passGrid);
-        }
-
+        // Events + passes
+        allEvents = data.events || [];
+        allPasses = data.passes_list || [];
+        renderEvents();
+        renderPasses();
       } catch (err) {
         console.error('Error fetching participant data:', err);
       }
